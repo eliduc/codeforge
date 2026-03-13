@@ -1,0 +1,61 @@
+# Environment files (contain API keys)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+frontend/dist/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite3
+
+# Docker
+docker-compose.override.yml
+
+# Snapshots (manual backups)
+snapshots/
+
+# Logs
+*.log
+logs/
+
+# Claude Code internals
+.claude/
+
+# Linting cache
+.ruff_cache/
+
+# Temp/debug session dumps
+*.session.json

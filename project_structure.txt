@@ -1,0 +1,141 @@
+Folder PATH listing for volume Windows-SSD
+Volume serial number is 6A52-5D69
+C:.
+¦   .env.example
+¦   docker-compose.yml
+¦   Makefile
+¦   project_structure.txt
+¦   README.md
+¦   start.bat
+¦   stop.bat
+¦   
++---backend
+¦   ¦   alembic.ini
+¦   ¦   Dockerfile
+¦   ¦   pyproject.toml
+¦   ¦   requirements.txt
+¦   ¦   
+¦   +---alembic
+¦   ¦   ¦   env.py
+¦   ¦   ¦   script.py.mako
+¦   ¦   ¦   
+¦   ¦   +---versions
+¦   ¦           001_initial.py
+¦   ¦           002_seed_prompts.py
+¦   ¦           
+¦   +---app
+¦       ¦   config.py
+¦       ¦   main.py
+¦       ¦   __init__.py
+¦       ¦   
+¦       +---agents
+¦       ¦       base.py
+¦       ¦       coder.py
+¦       ¦       finalizer.py
+¦       ¦       prompts.py
+¦       ¦       summarizer.py
+¦       ¦       tester.py
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---api
+¦       ¦   ¦   __init__.py
+¦       ¦   ¦   
+¦       ¦   +---routes
+¦       ¦   ¦       code.py
+¦       ¦   ¦       execution.py
+¦       ¦   ¦       prompts.py
+¦       ¦   ¦       sessions.py
+¦       ¦   ¦       settings.py
+¦       ¦   ¦       __init__.py
+¦       ¦   ¦       
+¦       ¦   +---websocket
+¦       ¦           manager.py
+¦       ¦           __init__.py
+¦       ¦           
+¦       +---core
+¦       ¦       config.py
+¦       ¦       orchestrator.py
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---db
+¦       ¦       database.py
+¦       ¦       models.py
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---executor
+¦       ¦       docker_executor.py
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---llm
+¦       ¦   ¦   base.py
+¦       ¦   ¦   router.py
+¦       ¦   ¦   __init__.py
+¦       ¦   ¦   
+¦       ¦   +---providers
+¦       ¦           anthropic.py
+¦       ¦           anthropic_provider.py
+¦       ¦           base.py
+¦       ¦           google.py
+¦       ¦           google_provider.py
+¦       ¦           grok.py
+¦       ¦           grok_provider.py
+¦       ¦           ollama.py
+¦       ¦           ollama_provider.py
+¦       ¦           openai.py
+¦       ¦           openai_provider.py
+¦       ¦           __init__.py
+¦       ¦           
+¦       +---schemas
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---services
+¦       ¦       __init__.py
+¦       ¦       
+¦       +---utils
+¦               __init__.py
+¦               
++---frontend
+¦   ¦   Dockerfile
+¦   ¦   index.html
+¦   ¦   package-lock.json
+¦   ¦   package.json
+¦   ¦   postcss.config.js
+¦   ¦   tailwind.config.js
+¦   ¦   tsconfig.json
+¦   ¦   tsconfig.node.json
+¦   ¦   vite.config.ts
+¦   ¦   
+¦   +---dist
+¦   ¦   ¦   index.html
+¦   ¦   ¦   
+¦   ¦   +---assets
+¦   ¦           index-BDTu27eU.js
+¦   ¦           index-seneAp-Y.css
+¦   ¦           
+¦   +---src
+¦       ¦   App.tsx
+¦       ¦   index.css
+¦       ¦   main.tsx
+¦       ¦   
+¦       +---components
+¦       ¦   +---layout
+¦       ¦           Layout.tsx
+¦       ¦           
+¦       +---pages
+¦       ¦       NewSessionPage.tsx
+¦       ¦       SessionDetailPage.tsx
+¦       ¦       SessionsPage.tsx
+¦       ¦       SettingsPage.tsx
+¦       ¦       
+¦       +---services
+¦       ¦       api.ts
+¦       ¦       
+¦       +---stores
+¦       ¦       sessionStore.ts
+¦       ¦       
+¦       +---types
+¦               index.ts
+¦               
++---sandbox
+        Dockerfile
+        

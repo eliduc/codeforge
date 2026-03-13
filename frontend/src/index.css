@@ -1,0 +1,324 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Theme CSS Variables ── */
+:root {
+  --cf-bg: #f1f5f9;
+  --cf-panel: #ffffff;
+  --cf-border: #e2e8f0;
+  --cf-text: #1e293b;
+  --cf-text-muted: #64748b;
+  --cf-input-bg: #f8fafc;
+  --cf-hover: #f1f5f9;
+  --cf-code-bg: #f1f5f9;
+  --cf-scrollbar-track: #f1f5f9;
+  --cf-scrollbar-thumb: #cbd5e1;
+  --cf-scrollbar-hover: #6366f1;
+  --cf-rf-bg: #f8fafc;
+  --cf-rf-controls: #ffffff;
+  --cf-rf-controls-border: #6366f1;
+  --cf-rf-btn: #f1f5f9;
+  --cf-rf-btn-border: #e2e8f0;
+  --cf-rf-btn-hover: #6366f1;
+  --cf-rf-svg: #334155;
+  --cf-rf-svg-hover: #ffffff;
+}
+
+.dark {
+  --cf-bg: #0f1419;
+  --cf-panel: #1a1f2e;
+  --cf-border: #2d3748;
+  --cf-text: #e2e8f0;
+  --cf-text-muted: #94a3b8;
+  --cf-input-bg: #1a1f2e;
+  --cf-hover: #2d3748;
+  --cf-code-bg: #1a1f2e;
+  --cf-scrollbar-track: #1a1f2e;
+  --cf-scrollbar-thumb: #4a5568;
+  --cf-scrollbar-hover: #6366f1;
+  --cf-rf-bg: #111827;
+  --cf-rf-controls: #111827;
+  --cf-rf-controls-border: #6366f1;
+  --cf-rf-btn: #1f2937;
+  --cf-rf-btn-border: #374151;
+  --cf-rf-btn-hover: #6366f1;
+  --cf-rf-svg: #ffffff;
+  --cf-rf-svg-hover: #ffffff;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cf-scrollbar-thumb) transparent;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--cf-scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cf-scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cf-scrollbar-hover);
+}
+
+/* Code highlighting */
+.hljs {
+  background: var(--cf-code-bg) !important;
+  padding: 1rem !important;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+
+/* React Flow customization */
+.react-flow__node {
+  font-family: 'Inter', sans-serif;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+/* React Flow Controls — theme-aware */
+.react-flow__controls {
+  background: var(--cf-rf-controls) !important;
+  border: 2px solid var(--cf-rf-controls-border) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  overflow: hidden !important;
+}
+
+.dark .react-flow__controls {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+}
+
+.react-flow__controls-button {
+  background: var(--cf-rf-btn) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--cf-rf-btn-border) !important;
+  color: var(--cf-rf-svg) !important;
+  width: 36px !important;
+  height: 36px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  transition: background-color 0.15s ease !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--cf-rf-btn-hover) !important;
+}
+
+.react-flow__controls-button:active {
+  background: #4f46e5 !important;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.react-flow__controls-button svg {
+  fill: var(--cf-rf-svg) !important;
+  stroke: var(--cf-rf-svg) !important;
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.react-flow__controls-button svg path {
+  fill: var(--cf-rf-svg) !important;
+  stroke: var(--cf-rf-svg) !important;
+}
+
+.react-flow__controls-button:hover svg,
+.react-flow__controls-button:hover svg path {
+  fill: var(--cf-rf-svg-hover) !important;
+  stroke: var(--cf-rf-svg-hover) !important;
+}
+
+/* Ensure zoom icons are visible */
+.react-flow__controls-zoomin svg,
+.react-flow__controls-zoomout svg,
+.react-flow__controls-fitview svg,
+.react-flow__controls-interactive svg {
+  fill: var(--cf-rf-svg) !important;
+  stroke: none !important;
+}
+
+.react-flow__controls-zoomin:hover svg,
+.react-flow__controls-zoomout:hover svg,
+.react-flow__controls-fitview:hover svg,
+.react-flow__controls-interactive:hover svg {
+  fill: var(--cf-rf-svg-hover) !important;
+}
+
+/* Custom component styles */
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-cf-primary text-white rounded-lg hover:bg-cf-secondary transition-colors font-medium;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-cf-panel border border-cf-border text-cf-text rounded-lg hover:bg-cf-border transition-colors font-medium;
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-cf-error text-white rounded-lg hover:bg-red-600 transition-colors font-medium;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 bg-cf-panel border border-cf-border rounded-lg text-cf-text focus:outline-none focus:border-cf-primary transition-colors;
+  }
+
+  .card {
+    @apply bg-cf-panel border border-cf-border rounded-xl p-4;
+  }
+
+  .status-badge {
+    @apply px-2 py-0.5 text-xs font-medium rounded-full;
+  }
+
+  .status-idle {
+    @apply bg-gray-600/30 text-gray-400;
+  }
+
+  .status-working {
+    @apply bg-blue-600/30 text-blue-400 animate-pulse;
+  }
+
+  .status-done {
+    @apply bg-green-600/30 text-green-400;
+  }
+
+  .status-error {
+    @apply bg-red-600/30 text-red-400;
+  }
+
+  .status-waiting {
+    @apply bg-yellow-600/30 text-yellow-400;
+  }
+
+  .severity-critical {
+    @apply text-red-400 bg-red-600/20;
+  }
+
+  .severity-serious {
+    @apply text-orange-400 bg-orange-600/20;
+  }
+
+  .severity-minor {
+    @apply text-yellow-400 bg-yellow-600/20;
+  }
+
+  .severity-suggestion {
+    @apply text-blue-400 bg-blue-600/20;
+  }
+}
+
+/* Animation for working status */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(99, 102, 241, 0);
+  }
+}
+
+.working-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Animated border for working nodes */
+@keyframes borderPulse {
+  0%, 100% {
+    border-color: rgba(255, 255, 255, 0.5);
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.3), 0 0 30px rgba(255, 255, 255, 0.2);
+  }
+  50% {
+    border-color: rgba(255, 255, 255, 1);
+    box-shadow: 0 0 25px rgba(255, 255, 255, 0.6), 0 0 50px rgba(255, 255, 255, 0.4), 0 0 75px rgba(255, 255, 255, 0.2);
+  }
+}
+
+@keyframes borderGlow {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.02);
+  }
+}
+
+.animate-border-pulse {
+  animation: borderPulse 1.5s ease-in-out infinite;
+}
+
+/* Flow animation for edges */
+@keyframes flowAnimation {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -15;
+  }
+}
+
+/* Transitions */
+.fade-enter {
+  opacity: 0;
+}
+.fade-enter-active {
+  opacity: 1;
+  transition: opacity 200ms ease-in;
+}
+.fade-exit {
+  opacity: 1;
+}
+.fade-exit-active {
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+/* ── Styled toast animations ── */
+@keyframes toastEnter {
+  0% {
+    opacity: 0;
+    transform: translateX(100%) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes toastLeave {
+  0% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(100%) scale(0.95);
+  }
+}
+
+.animate-toast-enter {
+  animation: toastEnter 0.3s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+}
+
+.animate-toast-leave {
+  animation: toastLeave 0.25s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
+}
