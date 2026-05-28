@@ -483,12 +483,15 @@ async def test_vr39_apply_enhancements_propagates_attachments_into_child_session
             .where(SessionModel.id == parent_id)
             .values(status=SessionStatus.AWAITING_ENHANCEMENT_REVIEW)
         )
+        # КАО#VR-39 (R2 minor fix) — FinalResult field is `selection_reasoning`
+        # + `readme_content`, NOT `final_summary` (which doesn't exist).
         db.add(
             FinalResult(
                 session_id=parent_id,
                 selected_coder_index=0,
                 final_code="print('hello')",
-                final_summary="ok",
+                readme_content="",
+                selection_reasoning="ok",
                 total_tokens=10,
                 total_cost_usd=0.0,
                 total_iterations=1,
