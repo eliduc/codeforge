@@ -328,6 +328,13 @@ async def fetch_repo(request: FetchRepoRequest):
             errors=result.get("errors", []),
         )
 
+    except ValueError as e:
+        # КАО#VR-44 — repo_service raises ValueError on hostile input (branch
+        # option-injection like "--upload-pack=…", bad clone-URL scheme, path
+        # traversal). That's a rejected *client* request → 400, never a 500
+        # that leaks a traceback. The validation itself is already correct;
+        # this only fixes the surfaced status code.
+        raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

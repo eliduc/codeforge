@@ -392,8 +392,13 @@ describe('VR-40 — Enhancer WS handler transitions (source pins)', () => {
   })
 
   it('loadSession preserves done/error/timeout/working when status="enhancing"', () => {
-    // Pin the VR-40 preservation comment + the preservation logic by id.
-    expect(src).toMatch(/VR-40[\s\S]{0,400}?preserve[\s\S]{0,400}?done[\s\S]{0,200}?error[\s\S]{0,200}?timeout/)
+    // КАО#VR-44 — re-anchored: the VR-44 rewrite moved "preserve" ahead of the
+    // VR-40 tag in the comment, so the old VR-40→preserve→done ordering no
+    // longer held. Pin the VR-44 enhancing-branch fix + the `preserveExisting`
+    // guard that covers all four WS-driven statuses (done/error/timeout/working).
+    expect(src).toMatch(
+      /VR-44[\s\S]*?preserveExisting[\s\S]{0,200}?'done'[\s\S]{0,120}?'error'[\s\S]{0,120}?'timeout'[\s\S]{0,120}?'working'/
+    )
   })
 })
 

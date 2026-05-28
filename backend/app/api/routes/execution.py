@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import get_current_user_id, require_auth
 from app.db.database import get_db
 from app.db.models import Session, FinalResult, CodeVersion, CodeExecution
 from app.sandbox import get_sandbox_client
@@ -20,10 +21,18 @@ async def run_final_code(
     session_id: UUID,
     timeout_sec: int = Query(default=60, ge=10, le=300),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Run the final code for a completed session."""
+    # КАО#VR-35 — ownership filter: a JWT caller may only run their own
+    # session's code. API-key / dev-mode (current_user_id None) keeps full
+    # access for backwards compatibility. A non-owner gets a clean 404 (the
+    # session is invisible) rather than a 400 that would confirm it exists.
+    current_user_id = get_current_user_id(auth)
     # Get session
     stmt = select(Session).where(Session.id == session_id)
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
 
@@ -107,8 +116,11 @@ async def run_code_version(
     version_id: UUID,
     timeout_sec: int = Query(default=60, ge=10, le=300),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Run code from a specific code version (coder iteration)."""
+    # КАО#VR-35 — ownership enforced via the owning session below.
+    current_user_id = get_current_user_id(auth)
     # Get code version
     stmt = select(CodeVersion).where(CodeVersion.id == version_id)
     result = await db.execute(stmt)
@@ -124,6 +136,11 @@ async def run_code_version(
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # КАО#VR-35 — a JWT caller may only run code versions of their own session.
+    # 404 (not 403) so we don't confirm the version exists for another tenant.
+    if current_user_id is not None and session.user_id != current_user_id:
+        raise HTTPException(status_code=404, detail="Code version not found")
 
     # Check for failed executions on this version → warning
     warning = None
@@ -202,10 +219,15 @@ async def bundle_final_code(
     session_id: UUID,
     timeout_sec: int = Query(default=60, ge=10, le=120),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Bundle the final JS/TS code into a browser-ready HTML page."""
+    # КАО#VR-35 — ownership filter (see run_final_code).
+    current_user_id = get_current_user_id(auth)
     # Get session
     stmt = select(Session).where(Session.id == session_id)
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
 
@@ -255,8 +277,11 @@ async def execute_code_version(
     code_version_id: UUID,
     timeout_sec: int = Query(default=60, ge=10, le=300),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Execute a specific code version."""
+    # КАО#VR-35 — ownership enforced via the owning session below.
+    current_user_id = get_current_user_id(auth)
     # Get code version
     stmt = select(CodeVersion).where(CodeVersion.id == code_version_id)
     result = await db.execute(stmt)
@@ -268,7 +293,14 @@ async def execute_code_version(
     # Get session for language
     stmt = select(Session).where(Session.id == version.session_id)
     result = await db.execute(stmt)
-    session = result.scalar_one()
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Code version not found")
+
+    # КАО#VR-35 — a JWT caller may only execute their own session's versions.
+    if current_user_id is not None and session.user_id != current_user_id:
+        raise HTTPException(status_code=404, detail="Code version not found")
 
     # Browser languages generate HTML — they run in the browser, not sandbox
     browser_language = session.language.lower() in (
@@ -325,8 +357,23 @@ async def execute_code_version(
 async def list_code_executions(
     code_version_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List all executions for a code version."""
+    # КАО#VR-35 — ownership check: a JWT caller may only list executions for
+    # code versions of their own session. Resolve version → session and verify
+    # the owner before returning any execution rows. 404 (not 403) on mismatch.
+    current_user_id = get_current_user_id(auth)
+    if current_user_id is not None:
+        cv_stmt = select(CodeVersion).where(CodeVersion.id == code_version_id)
+        code_version = (await db.execute(cv_stmt)).scalar_one_or_none()
+        if code_version is None:
+            raise HTTPException(status_code=404, detail="Code version not found")
+        sess_stmt = select(Session).where(Session.id == code_version.session_id)
+        session = (await db.execute(sess_stmt)).scalar_one_or_none()
+        if session is None or session.user_id != current_user_id:
+            raise HTTPException(status_code=404, detail="Code version not found")
+
     stmt = select(CodeExecution).where(
         CodeExecution.code_version_id == str(code_version_id)
     ).order_by(CodeExecution.created_at.desc())
