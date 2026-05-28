@@ -1742,32 +1742,52 @@ export default function SessionDetailPage() {
                   },
                 }
               }
-              // Enhancer nodes → working only if enabled (D/F/S agents only).
-              // Enh. Summarizer stays idle until it actually starts
-              // (it runs only after all enhancer agents finish).
-              // VR-40 — preserve `done` / `error` / `timeout` statuses on
-              // re-poll: if a D/F/S agent has already finished (and we
-              // flipped its status to `done` when the Summarizer started),
-              // a periodic loadSession() must NOT re-pulse it just because
-              // session.status is still `enhancing`. Only idle nodes get
-              // promoted to working here.
-              if (node.id.startsWith('enhancer-') && node.id !== 'enhancer-summarizer') {
-                const enhancerConfigs = data.agent_configs || session?.agent_configs || []
-                const isEnabledEnhancer =
-                  enhancerConfigs.some((c: any) => c.agent_type === node.data.agentType && c.enabled !== false)
+              // Enhancer nodes — VR-44 fix.
+              // Pulse continuity guarantee: while session.status === 'enhancing'
+              // there MUST be at least one pulsing block (user's spec).
+              //
+              // The previous check looked up enabled enhancer configs in
+              // `data.agent_configs`. But for many sessions the enhancer
+              // configs aren't persisted to AgentConfig — they're created
+              // transiently when the user clicks Enhance — so the check
+              // returned false and every D/F/S stayed `idle`.
+              //
+              // New rule (no agent_configs dependency):
+              //   1. If a node is already done/error/timeout/working, preserve
+              //      it (VR-40 — don't clobber WS-driven transitions).
+              //   2. Else if any D/F/S sibling is already 'done', that means
+              //      enhancer agents have finished and Summarizer is the
+              //      active phase — pulse Summarizer; keep others as-is.
+              //   3. Else D/F/S phase is still active — pulse all non-disabled
+              //      D/F/S; Summarizer stays idle.
+              if (node.id.startsWith('enhancer-')) {
                 const preserveExisting =
                   node.data.status === 'done' ||
                   node.data.status === 'error' ||
                   node.data.status === 'timeout' ||
                   node.data.status === 'working'
+                if (preserveExisting) {
+                  return node
+                }
+                // Look at sibling D/F/S statuses to decide which sub-phase
+                // we're in (D/F/S vs Summarizer).
+                const dfsSiblings = nds.filter((n: any) =>
+                  n.id.startsWith('enhancer-') && n.id !== 'enhancer-summarizer')
+                const anyDfsDone = dfsSiblings.some((n: any) =>
+                  n.data?.status === 'done' || n.data?.status === 'error' || n.data?.status === 'timeout')
+                if (node.id === 'enhancer-summarizer') {
+                  // Summarizer pulses iff D/F/S sub-phase is over.
+                  return {
+                    ...node,
+                    data: { ...node.data, status: anyDfsDone ? 'working' : 'idle' },
+                  }
+                }
+                // D/F/S node. Pulse unless explicitly disabled in agent_configs.
+                // Treat absent config as enabled (matches rebuildGraph default).
+                const isDisabled = node.data?.disabled === true
                 return {
                   ...node,
-                  data: {
-                    ...node.data,
-                    status: preserveExisting
-                      ? node.data.status
-                      : (isEnabledEnhancer ? 'working' : 'idle'),
-                  },
+                  data: { ...node.data, status: isDisabled ? 'idle' : 'working' },
                 }
               }
               return node
