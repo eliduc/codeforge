@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, Navigate } from 'react-router-dom'
 import {
   ReactFlow,
@@ -9,6 +9,7 @@ import {
   useNodesState,
   useEdgesState,
   useViewport,
+  useReactFlow,
   Panel,
   ConnectionMode,
   MarkerType,
@@ -60,8 +61,23 @@ import {
   Settings,
   UserPlus,
   XCircle,
+  ChevronDown,
+  ChevronRight,
+  Maximize2,
+  MoreHorizontal,
+  BookmarkPlus,
+  Lock,
+  Unlock,
+  HelpCircle,
+  History,
+  // КАО#VR-Wave1 Frontend — Visual Review skip-action icon.
+  SkipForward,
 } from 'lucide-react'
 import notify from '../components/common/StyledToast'
+// Улучшатели#3 wave 2 primitives + CodeBlock
+import Modal from '../components/common/Modal'
+import Button from '../components/common/Button'
+import CodeBlock from '../components/common/CodeBlock'
 import {
   getSession,
   startSession,
@@ -80,24 +96,42 @@ import {
   completeSession,
   updateSession,
   resetSession,
+  // КАО#VR-11 RestartFromScratch
+  restartSession,
   refinalizeSession,
   addAgentConfig,
   updateAgentConfig,
   deleteAgentConfig,
   createIntervention,
   runCodeVersion,
+  getSessionMetrics,
+  listCheckpoints,
+  createTemplateFromSession,
+  // КАО#VR-Wave1 Frontend — Visual Review API.
+  skipVisualReview,
+  // VR-39 — per-enhancement attachments reuse the Specification upload pipeline.
+  uploadFiles,
+  fetchRepo,
 } from '../services/api'
-import type { SessionResponse, FinalResultResponse, ExecutionResult, ReconnectingWebSocket } from '../services/api'
-import type { EnhancementSuggestion, CuratedSuggestion, EnhancerAgentConfig, EnhancerSummarizerConfig, EnhanceRequest } from '../types'
+import type { CheckpointResponse } from '../services/api'
+import type { SessionResponse, AgentConfigResponse, FinalResultResponse, ExecutionResult, ReconnectingWebSocket, WSConnectionState } from '../services/api'
+import type { EnhancementSuggestion, CuratedSuggestion, EnhancerAgentConfig, EnhancerSummarizerConfig, EnhanceRequest, AttachmentInfo } from '../types'
 import { useProvidersStore } from '../stores/providersStore'
 import SpecificationsDialog from '../components/common/SpecificationsDialog'
 import ConfirmDialog from '../components/common/ConfirmDialog'
-import { 
-  AgentNode, 
-  ArtifactEdge, 
-  DetailPanel, 
-  MetricsPanel, 
+import {
+  setOnboardingSessionStatus,
+  setOnboardingAgentStarted,
+} from '../components/onboarding/OnboardingTour'
+import {
+  AgentNode,
+  ArtifactEdge,
+  DetailPanel,
+  MetricsPanel,
   LegendPanel,
+  GitPanel,
+  // КАО#VR-Wave1 Frontend — Visual Review side-panel.
+  VisualReviewPanel,
   type AgentNodeData,
 } from '../components/graph'
 
@@ -111,9 +145,120 @@ function ViewportBridge({ onChange }: { onChange: (vp: { x: number; y: number; z
   return null
 }
 
+// ── Collapsible Settings Section ──
+function SettingsSection({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="border border-gray-700 rounded-lg overflow-hidden mb-3">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-gray-700/50 hover:bg-gray-700 transition-colors"
+      >
+        <span className="text-sm font-medium text-gray-200">{title}</span>
+        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${open ? '' : '-rotate-90'}`} />
+      </button>
+      {open && <div className="px-3 py-2 space-y-3">{children}</div>}
+    </div>
+  )
+}
+
+// ── ReactFlow Instance Bridge ──
+// Exposes the ReactFlow instance (setCenter, getNode, etc.) to the parent via a ref.
+function ReactFlowBridge({ instanceRef }: { instanceRef: React.MutableRefObject<ReturnType<typeof useReactFlow> | null> }) {
+  const instance = useReactFlow()
+  useEffect(() => {
+    instanceRef.current = instance
+  }, [instance, instanceRef])
+  return null
+}
+
+// ── WS Status Pill ──
+// Улучшатели#3 P0·M — WS reconnect UI: small floating indicator that surfaces
+// the live-feed connection state. Hidden when steady-connected; shown for
+// connecting / reconnecting (with attempt counter) / disconnected (with retry).
+function WSStatusPill({
+  state,
+  recentlyRecovered,
+}: {
+  state: WSConnectionState
+  recentlyRecovered: boolean
+}) {
+  // Hide entirely when steady-connected (except for the brief recovery flash).
+  if (state.status === 'connected' && !recentlyRecovered) return null
+
+  // Position: top-right inside the graph container. z-20 keeps it above
+  // the graph but below modals (z-50+). pointer-events on the wrapper are
+  // disabled so the pane underneath remains draggable; only the pill itself
+  // and its retry button accept clicks.
+  const baseWrapper =
+    'absolute top-3 right-3 z-20 pointer-events-none flex items-center'
+
+  if (state.status === 'connected' && recentlyRecovered) {
+    return (
+      <div className={baseWrapper}>
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-cf-success/15 border border-cf-success/40 px-3 py-1.5 text-xs font-medium text-cf-success shadow-lg transition-opacity duration-200">
+          <span className="inline-block w-2 h-2 rounded-full bg-cf-success" />
+          <span>Connected</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (state.status === 'connecting') {
+    return (
+      <div className={baseWrapper}>
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-cf-panel/90 border border-cf-border px-3 py-1.5 text-xs font-medium text-cf-text-muted shadow-lg backdrop-blur">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          <span>Connecting…</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (state.status === 'reconnecting') {
+    const max = state.maxRetries
+    // Use ∞ if the cap is very high; otherwise show the cap.
+    const maxLabel = max >= 999 ? '∞' : String(max)
+    return (
+      <div className={baseWrapper}>
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-auto flex items-center gap-2 rounded-full bg-cf-warning/15 border border-cf-warning/50 px-3 py-1.5 text-xs font-medium text-cf-warning shadow-lg backdrop-blur"
+        >
+          <Loader2 className="w-3 h-3 animate-spin" />
+          <span>Reconnecting (attempt {state.attempt}/{maxLabel})…</span>
+        </div>
+      </div>
+    )
+  }
+
+  // disconnected — terminal: invite user to refresh.
+  return (
+    <div className={baseWrapper}>
+      <div
+        role="alert"
+        className="pointer-events-auto flex items-center gap-2 rounded-full bg-cf-error/15 border border-cf-error/50 px-3 py-1.5 text-xs font-medium text-cf-error shadow-lg backdrop-blur"
+      >
+        <XCircle className="w-3.5 h-3.5" />
+        <span>Live feed disconnected</span>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="ml-1 inline-flex items-center gap-1 rounded-full bg-cf-error/25 hover:bg-cf-error/40 border border-cf-error/60 px-2 py-0.5 text-[11px] font-semibold text-cf-error transition-colors"
+        >
+          <RefreshCw className="w-3 h-3" />
+          Refresh
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Group Frames Overlay ──
 // Rendered OUTSIDE <ReactFlow> so buttons aren't blocked by the pane grab handler.
-function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, onRemoveCoder, onRemoveTester, canModify }: {
+function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, onRemoveCoder, onRemoveTester, canModify, onGroupDragStart }: {
   viewport: { x: number; y: number; zoom: number }
   nodes: any[]
   onAddCoder: () => void
@@ -121,12 +266,15 @@ function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, 
   onRemoveCoder: () => void
   onRemoveTester: () => void
   canModify: boolean
+  onGroupDragStart: (groupPrefix: string, e: React.MouseEvent) => void
 }) {
   const { x: vx, y: vy, zoom } = viewport
 
-  const PADDING = 24
-  const AGENT_NODE_W = 200
-  const AGENT_NODE_H = 130
+  // PADDING must exceed AgentNode active-state glow extent (≤50px outside node bounds)
+  // so the dashed frame visually encompasses the glow halo, not bisects it.
+  const PADDING = 56
+  const AGENT_NODE_W = 220
+  const AGENT_NODE_H = 140
 
   const groups: { label: string; color: string; nodePrefix: string; showCount?: boolean; onAdd?: () => void; onRemove?: () => void; minCount?: number }[] = [
     { label: 'Coders', color: '#3B82F6', nodePrefix: 'coder-', showCount: true, onAdd: onAddCoder, onRemove: onRemoveCoder, minCount: 1 },
@@ -135,7 +283,7 @@ function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, 
   ]
 
   return (
-    <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 5 }}>
+    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 5, overflow: 'visible' }}>
       {groups.map(({ label, color, nodePrefix, showCount, onAdd, onRemove, minCount }) => {
         const groupNodes = allNodes.filter((n: any) => n.id.startsWith(nodePrefix))
         if (groupNodes.length === 0) return null
@@ -174,6 +322,69 @@ function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, 
           zIndex: 10,
         }
 
+        // Build "drag handle" strips that cover empty space inside the frame
+        // (between the dashed border and the nodes). Each strip catches mousedown
+        // and triggers a whole-group drag, while leaving the nodes themselves
+        // freely clickable / individually draggable.
+        const sortedByY = [...groupNodes].sort((a, b) => a.position.y - b.position.y)
+        const colLeft = (sortedByY[0].position.x - minX) * zoom
+        const colRight = colLeft + AGENT_NODE_W * zoom
+        const nodeYsRel = sortedByY.map(n => (n.position.y - minY) * zoom)
+        const nodeHpx = AGENT_NODE_H * zoom
+
+        const handleStripMouseDown = (e: React.MouseEvent) => {
+          if (e.button !== 0) return  // left-click only
+          e.preventDefault()
+          e.stopPropagation()
+          onGroupDragStart(nodePrefix, e)
+        }
+        const stripCommonStyle: React.CSSProperties = {
+          pointerEvents: 'auto',
+          cursor: 'grab',
+        }
+
+        // Edge-band width: thin slivers along the frame border. Bounded by the
+        // PADDING zone so they never overlap any node (regardless of which
+        // column the node sits in — fixes Enh. Summarizer being un-draggable
+        // because its X column differs from D/F/S).
+        const edgeBand = Math.max(8, Math.min(PADDING * zoom * 0.5, 28))
+
+        // Strips: thin edges around the frame + column-bound top/bottom/between
+        const strips: { key: string; style: React.CSSProperties }[] = [
+          // Left edge band (thin sliver, not full-padding) — doesn't overlap
+          // any node, leaves left-of-column space (where multi-column nodes
+          // like Enh. Summarizer can sit) free for direct node drag.
+          { key: 'L', style: { left: 0, top: 0, width: edgeBand, height: screenH } },
+          // Right edge band
+          { key: 'R', style: { left: screenW - edgeBand, top: 0, width: edgeBand, height: screenH } },
+          // Above the first node, within the node column
+          { key: 'T', style: { left: colLeft, top: 0, width: colRight - colLeft, height: nodeYsRel[0] } },
+          // Below the last node, within the node column
+          {
+            key: 'B',
+            style: {
+              left: colLeft,
+              top: nodeYsRel[nodeYsRel.length - 1] + nodeHpx,
+              width: colRight - colLeft,
+              height: screenH - (nodeYsRel[nodeYsRel.length - 1] + nodeHpx),
+            },
+          },
+        ]
+        for (let i = 0; i < sortedByY.length - 1; i++) {
+          const top = nodeYsRel[i] + nodeHpx
+          const bottom = nodeYsRel[i + 1]
+          strips.push({
+            key: `G${i}`,
+            style: { left: colLeft, top, width: colRight - colLeft, height: bottom - top },
+          })
+        }
+
+        // tour-anchor: tag frame so Tour 2 can highlight Coders / Testers groups.
+        const tourAttr =
+          nodePrefix === 'coder-' ? { 'data-tour': 'coders-group' }
+            : nodePrefix === 'tester-' ? { 'data-tour': 'testers-group' }
+            : {}
+
         return (
           <div
             key={label}
@@ -184,7 +395,18 @@ function GroupFramesLayer({ viewport, nodes: allNodes, onAddCoder, onAddTester, 
               width: screenW,
               height: screenH,
             }}
+            {...tourAttr}
           >
+            {/* Drag strips (grab the group via click-and-hold on empty space) */}
+            {strips.map(({ key, style }) => (
+              <div
+                key={key}
+                className="absolute"
+                style={{ ...stripCommonStyle, ...style }}
+                onMouseDown={handleStripMouseDown}
+                title="Drag to move group"
+              />
+            ))}
             {/* Frame border */}
             <div
               className="absolute inset-0 rounded-xl border-2 border-dashed pointer-events-none"
@@ -244,9 +466,14 @@ const edgeTypes: EdgeTypes = {
 }
 
 // Graph layout constants
-const NODE_WIDTH = 180
-const HORIZONTAL_GAP = 120
-const VERTICAL_GAP = 140
+const NODE_WIDTH = 220
+// HORIZONTAL_GAP must be > 2 * GroupFramesLayer.PADDING (56) so adjacent
+// group frames don't overlap each other. 160px gives ~48px margin between frames.
+const HORIZONTAL_GAP = 160
+// VERTICAL_GAP between successive nodes in the same column (= spacing between
+// their top-left corners). AgentNode height is 140px, so the visible gap
+// between node edges = VERTICAL_GAP - 140. 160 → 20px gap (compact but legible).
+const VERTICAL_GAP = 160
 const START_X = 80
 const START_Y = 100
 
@@ -645,9 +872,9 @@ const THINKING_EFFORT_OPTIONS = [
 
 function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: {
   agentType: string; x: number; y: number;
-  existingConfig?: { llm_provider: string; llm_model: string; thinking_effort?: string | null; custom_prompt?: string | null; enabled?: boolean };
+  existingConfig?: { llm_provider: string; llm_model: string; thinking_effort?: string | null; custom_prompt?: string | null; enabled?: boolean; temperature?: number; max_tokens?: number };
   onClose: () => void;
-  onSave?: (config: { provider: string; model: string; thinkingEffort: string; enabled: boolean; instruction: string }) => void
+  onSave?: (config: { provider: string; model: string; thinkingEffort: string; enabled: boolean; instruction: string; temperature: number; maxTokens: number }) => void
 }) {
   const meta = agentPopupMeta[agentType]
   const isEnhancerAgent = agentType.startsWith('enhancer_') && agentType !== 'enhancer_summary'
@@ -660,6 +887,12 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
   const [model, setModel] = useState(existingConfig?.llm_model || '')
   const [thinkingEffort, setThinkingEffort] = useState(existingConfig?.thinking_effort || '')
   const [instruction, setInstruction] = useState(existingConfig?.custom_prompt || '')
+  const [temperature, setTemperature] = useState<number>(
+    typeof existingConfig?.temperature === 'number' ? existingConfig.temperature : 0.7
+  )
+  const [maxTokens, setMaxTokens] = useState<number>(
+    typeof existingConfig?.max_tokens === 'number' ? existingConfig.max_tokens : 4096
+  )
   const loading = storeLoading && providers.length === 0
 
   useEffect(() => {
@@ -719,7 +952,7 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
   return (
     <div
       ref={popupRef}
-      className="absolute z-50 w-52 bg-gray-800 border border-gray-600 rounded-xl p-3 flex flex-col gap-2.5 shadow-xl shadow-black/40 max-h-[calc(100vh-80px)] overflow-y-auto"
+      className="absolute z-50 w-72 bg-gray-800 border border-gray-600 rounded-xl p-3 flex flex-col gap-2.5 shadow-xl shadow-black/40 max-h-[calc(100vh-80px)] overflow-y-auto"
       style={{ left: x, top: y }}
       onClick={e => e.stopPropagation()}
     >
@@ -755,8 +988,9 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
 
           {/* Provider */}
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Provider</label>
+            <label className="block text-xs font-medium text-gray-400 mb-1" htmlFor="agent-provider-select">Provider</label>
             <select
+              id="agent-provider-select"
               value={provider}
               onChange={e => {
                 const p = e.target.value
@@ -768,6 +1002,7 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
                 // Reset thinking effort to Auto when switching provider
                 setThinkingEffort('')
               }}
+              aria-label="LLM provider"
               className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
             >
               {providers.map(p => (
@@ -778,14 +1013,16 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
 
           {/* Model */}
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Model</label>
+            <label className="block text-xs font-medium text-gray-400 mb-1" htmlFor="agent-model-select">Model</label>
             <select
+              id="agent-model-select"
               value={model}
               onChange={e => {
                 setModel(e.target.value)
                 // Reset thinking effort when model changes
                 setThinkingEffort('')
               }}
+              aria-label="LLM model"
               className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
             >
               {modelsForProvider.map(m => (
@@ -796,37 +1033,78 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
 
           {/* Thinking Effort */}
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Thinking Effort</label>
+            <label className="block text-xs font-medium text-gray-400 mb-1" htmlFor="agent-thinking-effort-select">Thinking Effort</label>
             <select
+              id="agent-thinking-effort-select"
               value={thinkingEffort}
               onChange={e => setThinkingEffort(e.target.value)}
               disabled={supportedEfforts.length === 0}
+              aria-label="Thinking effort"
               className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {finalEffortOptions.map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
+            {thinkingEffort === 'max' && !/opus/i.test(model) && (
+              <div className="mt-1 text-[10px] text-amber-400 leading-tight">
+                Max effort only supported on Opus models
+              </div>
+            )}
           </div>
 
-          {/* Instruction */}
-          {isEnhancerAgent && (
+          {/* Temperature & Max Tokens */}
+          <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Instructions</label>
-              <textarea
-                value={instruction}
-                onChange={e => setInstruction(e.target.value)}
-                placeholder="Custom instructions..."
-                rows={3}
-                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-xs text-white placeholder-gray-500 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
+              <label className="block text-xs font-medium text-gray-400 mb-1">Temperature</label>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.1}
+                value={temperature}
+                onChange={e => {
+                  const v = parseFloat(e.target.value)
+                  setTemperature(Number.isFinite(v) ? v : 0.7)
+                }}
+                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
             </div>
-          )}
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Max Tokens</label>
+              <input
+                type="number"
+                min={1000}
+                max={128000}
+                step={1000}
+                value={maxTokens}
+                onChange={e => {
+                  const v = parseInt(e.target.value, 10)
+                  setMaxTokens(Number.isFinite(v) ? v : 4096)
+                }}
+                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+
+          {/* Custom Prompt (all agents) */}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1">
+              {isEnhancerAgent ? 'Instructions' : 'Custom Prompt (optional)'}
+            </label>
+            <textarea
+              value={instruction}
+              onChange={e => setInstruction(e.target.value)}
+              placeholder={isEnhancerAgent ? 'Custom instructions...' : 'Override default system prompt (leave empty to use default)'}
+              rows={isEnhancerAgent ? 3 : 5}
+              className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-xs text-white placeholder-gray-500 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+          </div>
 
           {/* OK button */}
           <button
             onClick={() => {
-              onSave?.({ provider, model, thinkingEffort, enabled, instruction })
+              onSave?.({ provider, model, thinkingEffort, enabled, instruction, temperature, maxTokens })
               onClose()
             }}
             className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-xs font-medium text-white transition-colors"
@@ -909,18 +1187,55 @@ function formatErrorForToast(raw: string, maxLen = 150): string {
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '…' : cleaned
 }
 
+// КАО#VR-26 — Workflow-phase back-fill map. Exported so the regression suite
+// (kao_vr25_to_27.test.tsx) can runtime-validate the agent_type → phase pairs
+// instead of relying on fragile static greps. Used inside the `agent_started`
+// WebSocket handler below to recover the phase pill when `phase_started` was
+// dropped (e.g. WS disconnect during the Visual Review pause).
+export const PHASE_BY_AGENT = {
+  coder: 'coding',
+  tester: 'testing',
+  summarizer: 'summarizing',
+  finalizer: 'finalizing',
+  enhancer: 'enhancing',
+  enhancer_summarizer: 'enhancing',
+} as const
+
 export default function SessionDetailPage() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
   const wsRef = useRef<ReconnectingWebSocket | null>(null)
   const reactFlowContainerRef = useRef<HTMLDivElement>(null)
+  const reactFlowInstanceRef = useRef<ReturnType<typeof useReactFlow> | null>(null)
 
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Publish session status to the onboarding tour orchestrator so it can
+  // pick the right tour (anatomy / live / done). Inert if no tour is pending.
+  useEffect(() => {
+    if (session) {
+      setOnboardingSessionStatus(session.status as any)
+    } else {
+      setOnboardingSessionStatus(null)
+    }
+    return () => {
+      // Clear when leaving the page so the welcome tour on /sessions doesn't
+      // get tripped by a stale session_anatomy hint.
+      setOnboardingSessionStatus(null)
+    }
+  }, [session?.status, session?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   const [actionLoading, setActionLoading] = useState(false)
   const [finalResult, setFinalResult] = useState<FinalResultResponse | null>(null)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
+  // Save-as-template dialog state
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [templateDescription, setTemplateDescription] = useState('')
+  const [savingTemplate, setSavingTemplate] = useState(false)
   const [showRefinalizeConfirm, setShowRefinalizeConfirm] = useState(false)
+  // КАО#VR-11 RestartFromScratch — confirm dialog for the "restart from scratch" action.
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false)
 
   // UI state
   const [showCode, setShowCode] = useState(false)
@@ -930,6 +1245,7 @@ export default function SessionDetailPage() {
   const [prTitle, setPRTitle] = useState('CodeForge: Code Improvements')
   const [prLoading, setPRLoading] = useState(false)
   const [prResult, setPRResult] = useState<{ pr_url: string; pr_number: number } | null>(null)
+  const [showGitPanel, setShowGitPanel] = useState(false)
   const [showIntervention, setShowIntervention] = useState(false)
   const [interventionText, setInterventionText] = useState('')
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
@@ -955,6 +1271,9 @@ export default function SessionDetailPage() {
   const [enhancementSuggestions, setEnhancementSuggestions] = useState<EnhancementSuggestion[]>([])
   const [curatedItems, setCuratedItems] = useState<(CuratedSuggestion & { selected: boolean; editing: boolean })[]>([])
   const [enhancementLoading, setEnhancementLoading] = useState(false)
+  // VR-36 — ref-guard against duplicate Enhance clicks (covers the 16 ms gap
+  // between onClick fire and React applying setEnhancementLoading(true)).
+  const enhancementInflightRef = useRef(false)
 
   // Workflow tracking state
   const [workflowState, setWorkflowState] = useState<WorkflowState>({
@@ -974,6 +1293,9 @@ export default function SessionDetailPage() {
     testerCompletions: {},
   })
 
+  // Crash-recovery checkpoints (read-only listing)
+  const [checkpoints, setCheckpoints] = useState<CheckpointResponse[]>([])
+
   // Editable title state
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
@@ -981,6 +1303,125 @@ export default function SessionDetailPage() {
 
   // Specifications dialog state
   const [showSpecificationsDialog, setShowSpecificationsDialog] = useState(false)
+
+  // Улучшатели#3 P0·M — WS reconnect UI: live WebSocket connection state.
+  // Drives the status pill + dimmed overlay so users know the live feed
+  // is reconnecting/dead (previously only logged to console).
+  const [wsState, setWsState] = useState<WSConnectionState>({
+    status: 'connecting',
+    attempt: 0,
+    maxRetries: 5,
+  })
+  // Brief "Connected" success flash after a recovery, then auto-hide.
+  const [wsRecentlyRecovered, setWsRecentlyRecovered] = useState(false)
+  const wsRecoveryTimerRef = useRef<number | null>(null)
+
+  // Улучшатели#3 wave 2 #3 — Lock viewport toggle. When locked all programmatic
+  // panToGroup / setCenter calls are no-ops so the user's manual viewport sticks.
+  // Persisted to localStorage so the preference survives reloads.
+  const [lockViewport, setLockViewport] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('codeforge.session.lockViewport') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('codeforge.session.lockViewport', lockViewport ? '1' : '0')
+    } catch { /* localStorage unavailable */ }
+  }, [lockViewport])
+
+  // Улучшатели#3 wave 2 #7 — Keyboard-shortcut help modal.
+  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false)
+
+  // Улучшатели#3 P3·S — Header overflow menu (responsive).
+  // Below md (768px) the secondary actions collapse into a ⋯ menu.
+  const [headerOverflowOpen, setHeaderOverflowOpen] = useState(false)
+  const headerOverflowRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!headerOverflowOpen) return
+    const handler = (e: MouseEvent) => {
+      if (
+        headerOverflowRef.current &&
+        !headerOverflowRef.current.contains(e.target as Node)
+      ) {
+        setHeaderOverflowOpen(false)
+      }
+    }
+    window.addEventListener('mousedown', handler)
+    return () => window.removeEventListener('mousedown', handler)
+  }, [headerOverflowOpen])
+
+  // Улучшатели#3 P2·S — Final Result fullscreen + wrap toggle.
+  // Tracks whether the user expanded the Generated Code into a Modal viewer
+  // and whether long lines should wrap (default no-wrap to match an editor).
+  const [finalCodeFullscreen, setFinalCodeFullscreen] = useState(false)
+  const [finalCodeWrap, setFinalCodeWrap] = useState(false)
+
+  // Улучшатели#3 P2·M — Side-panel history breadcrumb.
+  // Tracks the last few panels the user opened so they can hop back without
+  // having to re-trigger an action. Push on open, dedup adjacents, cap to 3.
+  // КАО#VR-Wave1 Frontend — Visual Review: add a 'visualReview' panel key.
+  type PanelKey = 'detail' | 'code' | 'intervention' | 'execution' | 'browser' | 'enhancement' | 'visualReview'
+  const PANEL_LABELS: Record<PanelKey, string> = {
+    detail: 'Detail',
+    code: 'Result',
+    intervention: 'Intervene',
+    execution: 'Execution',
+    browser: 'Run',
+    enhancement: 'Enhance',
+    visualReview: 'Visual Review',
+  }
+  const [panelHistory, setPanelHistory] = useState<PanelKey[]>([])
+  const pushPanel = useCallback((key: PanelKey) => {
+    setPanelHistory(prev => {
+      const next = [...prev.filter(k => k !== key), key]
+      return next.slice(-3)
+    })
+  }, [])
+  // КАО#VR-Wave1 Frontend — Visual Review: side-panel visibility state.
+  const [showVisualReview, setShowVisualReview] = useState(false)
+  // Track whether we've auto-opened the panel this cycle so we don't re-open
+  // it after the user manually closes it while still in `awaiting_visual_review`.
+  const visualReviewAutoOpenedRef = useRef<string | null>(null)
+  const switchToPanel = useCallback((key: PanelKey) => {
+    // Close all panels first then open the requested one.
+    setShowCode(false)
+    setShowIntervention(false)
+    setShowExecution(false)
+    setShowBrowserPreview(false)
+    setShowEnhancementReview(false)
+    setShowVisualReview(false)
+    if (key !== 'detail') {
+      setSelectedNode(null)
+      setSelectedNodeData(null)
+    }
+    switch (key) {
+      case 'code': setShowCode(true); break
+      case 'intervention': setShowIntervention(true); break
+      case 'execution': setShowExecution(true); break
+      case 'browser': setShowBrowserPreview(true); break
+      case 'enhancement': setShowEnhancementReview(true); break
+      case 'visualReview': setShowVisualReview(true); break
+      case 'detail': /* Detail panel relies on selectedNode, can't restore without id */ break
+    }
+  }, [])
+
+  // Улучшатели#3 wave 2 #6 — Intervention history. Each entry is what we sent
+  // to the API + its delivery state. We don't have a backend WS event for
+  // "consumed by agent X at iter N" yet, so the status flips to "delivered"
+  // once the POST resolves. TODO(backend): wire an `intervention_acknowledged`
+  // WS event to flip status to 'consumed' with agent/iteration metadata.
+  type InterventionStatus = 'pending' | 'delivered' | 'consumed' | 'failed'
+  interface InterventionHistoryEntry {
+    id: string
+    content: string
+    sentAt: number
+    status: InterventionStatus
+    consumedBy?: string  // e.g. "coder_0 at iter 2" — backend TODO
+  }
+  const [interventionHistory, setInterventionHistory] = useState<InterventionHistoryEntry[]>([])
 
   // Providers store (for adding new agents)
   const { providers } = useProvidersStore()
@@ -1001,7 +1442,16 @@ export default function SessionDetailPage() {
   // Refs to avoid stale closures in handleWSMessage
   const finishedCodersRef = useRef<Set<number>>(new Set())
   const agentTimeoutRef = useRef<number>(300)
+  const requestTimeoutRef = useRef<number>(300)   // httpx timeout for LLM requests
   const executionTimeoutRef = useRef<number>(60)
+  // Skip auto-pan-to-node for the very FIRST agent_started after workflow_started
+  // (user complained that pressing "Start" zooms into coders unexpectedly).
+  // Set true on workflow_started, cleared after first agent_started.
+  const skipNextAutoPanRef = useRef<boolean>(false)
+  // Улучшатели#3 wave 2 #3 — mirror lockViewport into a ref so panToGroup
+  // (called via stale WS-message closures) reads the current value.
+  const lockViewportRef = useRef<boolean>(false)
+  useEffect(() => { lockViewportRef.current = lockViewport }, [lockViewport])
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -1009,9 +1459,58 @@ export default function SessionDetailPage() {
   }, [workflowState.finishedCoders])
 
   useEffect(() => {
-    agentTimeoutRef.current = session?.agent_timeout ?? 300
+    agentTimeoutRef.current = session?.agent_timeout ?? 600
+    requestTimeoutRef.current = session?.request_timeout ?? 300
     executionTimeoutRef.current = session?.execution_timeout ?? 60
-  }, [session?.agent_timeout, session?.execution_timeout])
+  }, [session?.agent_timeout, session?.request_timeout, session?.execution_timeout])
+
+  // КАО#VR-35 — re-fetch final_result whenever the session lands in a
+  // "code-ready" state. The original code only loaded it once inside
+  // loadSession(); any other code path that cleared `finalResult` (e.g. a
+  // race between a WS reset event and the actual reset action) left the UI
+  // permanently without a Run Code button until a hard refresh. This effect
+  // is idempotent: if the backend says final_result exists, we surface it.
+  useEffect(() => {
+    if (!sessionId || !session) return
+    const status = session.status
+    if (status !== 'completed' && status !== 'awaiting_enhancement' &&
+        status !== 'awaiting_enhancement_review' && status !== 'enhancing') {
+      return
+    }
+    // Only fetch if we don't already have it for this session.
+    if (finalResult && finalResult.session_id === sessionId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const result = await getFinalResult(sessionId)
+        if (!cancelled && result) setFinalResult(result)
+      } catch (err) {
+        // Silent — loadSession's own catch handled the initial attempt.
+        console.warn('VR-35 finalResult refetch failed:', err)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [session?.id, session?.status, sessionId, finalResult?.session_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // КАО#VR-Wave1 Frontend — Visual Review: auto-open the panel when the
+  // session flips to `awaiting_visual_review`. Only fires once per session id
+  // entering that status (tracked via visualReviewAutoOpenedRef) so the user
+  // can dismiss the panel without it springing back open.
+  useEffect(() => {
+    if (!session) return
+    if (session.status === 'awaiting_visual_review') {
+      if (visualReviewAutoOpenedRef.current !== session.id) {
+        visualReviewAutoOpenedRef.current = session.id
+        switchToPanel('visualReview')
+        pushPanel('visualReview')
+      }
+    } else {
+      // Reset the latch so a subsequent re-entry (e.g. after Apply) re-opens.
+      if (visualReviewAutoOpenedRef.current === session.id) {
+        visualReviewAutoOpenedRef.current = null
+      }
+    }
+  }, [session?.id, session?.status, switchToPanel, pushPanel])
 
   // Setup WebSocket connection — use ref to avoid stale closure
   useEffect(() => {
@@ -1019,6 +1518,25 @@ export default function SessionDetailPage() {
 
     const ws = createWebSocket(sessionId)
     wsRef.current = ws
+
+    // Улучшатели#3 P0·M — WS reconnect UI: subscribe to lifecycle transitions
+    // so the status pill + overlay reflect connecting/reconnecting/disconnected.
+    ws.onstatechange = (state) => {
+      setWsState(prev => {
+        // Flash "Connected" briefly after recovering from reconnect/disconnect.
+        if (state.status === 'connected' && prev.status !== 'connected' && prev.status !== 'connecting') {
+          setWsRecentlyRecovered(true)
+          if (wsRecoveryTimerRef.current !== null) {
+            window.clearTimeout(wsRecoveryTimerRef.current)
+          }
+          wsRecoveryTimerRef.current = window.setTimeout(() => {
+            setWsRecentlyRecovered(false)
+            wsRecoveryTimerRef.current = null
+          }, 1500)
+        }
+        return state
+      })
+    }
 
     ws.onopen = () => {
       console.log('WebSocket connected for session:', sessionId)
@@ -1049,6 +1567,54 @@ export default function SessionDetailPage() {
 
     return () => {
       ws.close()
+      // Улучшатели#3 P0·M — WS reconnect UI: clear flash timer on unmount.
+      if (wsRecoveryTimerRef.current !== null) {
+        window.clearTimeout(wsRecoveryTimerRef.current)
+        wsRecoveryTimerRef.current = null
+      }
+    }
+  }, [sessionId])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // VR-37 — UI ↔ backend state synchronization safety net.
+  // The WS-driven model is the primary path, but WS events can be missed
+  // (network blips, backgrounded tabs throttling timers, browser sleep).
+  // This effect adds three independent fallbacks so the rendered UI never
+  // drifts more than ~30 s from the authoritative DB state:
+  //   1. visibilitychange  — refetch the moment the tab regains focus
+  //   2. window focus      — refetch when the window itself gains focus
+  //                          (covers alt-tab on Linux/Windows where the
+  //                          visibilitychange event does NOT fire)
+  //   3. interval poll     — refetch every 30 s as a defence-in-depth net
+  //                          for silent WS breakages that don't trigger
+  //                          onreconnect (e.g. zombie sockets that the OS
+  //                          thinks are still open).
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+
+    const refresh = (reason: string) => {
+      if (cancelled || document.hidden) return
+      // Don't spam network when the page isn't visible — visibilitychange
+      // will re-trigger refresh when the tab comes back.
+      console.debug(`[VR-37] State sync refresh: ${reason}`)
+      loadSession()
+    }
+
+    const onVisibility = () => {
+      if (!document.hidden) refresh('visibilitychange')
+    }
+    const onFocus = () => refresh('window-focus')
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onFocus)
+
+    const intervalId = window.setInterval(() => refresh('30s-poll'), 30_000)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onFocus)
+      window.clearInterval(intervalId)
     }
   }, [sessionId])  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1072,16 +1638,53 @@ export default function SessionDetailPage() {
       setSession(data)
       buildGraph(data)
       
-      // Initialize workflowState from session data
-      setWorkflowState(prev => ({
-        ...prev,
-        iteration: data.current_iteration ?? prev.iteration,
-        phase: data.status === 'running' ? 'coding' : 
-               data.status === 'completed' ? 'completed' : 
-               data.status === 'enhancing' ? 'coding' :
-               data.status === 'awaiting_enhancement' ? 'completed' :
-               data.status === 'awaiting_enhancement_review' ? 'completed' : 'idle',
-      }))
+      // Initialize / reconcile workflowState from server-of-truth session data.
+      // On reconnect / page-refresh, server's current_iteration must override
+      // the local optimistic value (otherwise dropped WS iteration_started
+      // events leave the UI stuck on the old iteration). Also clear counters
+      // that only WS events can populate — those are stale after a reconnect.
+      setWorkflowState(prev => {
+        const fromServer = data.current_iteration ?? 0
+        const fromLocal = prev.iteration ?? 0
+        const reconciledIter = Math.max(fromServer, fromLocal) || 1
+        const isLive = data.status === 'running' || data.status === 'enhancing'
+        return {
+          ...prev,
+          iteration: reconciledIter,
+          phase: data.status === 'running' ? 'coding' :
+                 data.status === 'completed' ? 'completed' :
+                 data.status === 'enhancing' ? 'coding' :
+                 data.status === 'awaiting_enhancement' ? 'completed' :
+                 data.status === 'awaiting_enhancement_review' ? 'completed' : 'idle',
+          // For live sessions we don't know exact counts after reconnect —
+          // events for current iteration may have been dropped. Reset and let
+          // upcoming agent_completed events refill. For terminal states keep
+          // whatever metrics we accumulated.
+          codersDone: isLive && fromServer > fromLocal ? 0 : prev.codersDone,
+          testersDone: isLive && fromServer > fromLocal ? 0 : prev.testersDone,
+          testerCompletions: isLive && fromServer > fromLocal ? {} : prev.testerCompletions,
+        }
+      })
+
+      // Fetch real metrics from DB (tokens/cost are only accumulated via WS during live runs)
+      const metrics = await getSessionMetrics(sessionId!)
+      if (metrics && seq === loadSessionSeqRef.current) {
+        setWorkflowState(prev => ({
+          ...prev,
+          totalTokens: metrics.total_tokens || prev.totalTokens,
+          totalCost: metrics.total_cost_usd || prev.totalCost,
+        }))
+      }
+
+      // Fetch crash-recovery checkpoints (best-effort — non-fatal if endpoint missing)
+      try {
+        const cps = await listCheckpoints(sessionId!)
+        if (seq === loadSessionSeqRef.current) {
+          setCheckpoints(cps)
+        }
+      } catch {
+        // Ignore — checkpoints are an auxiliary feature
+      }
 
       // Recover node statuses based on session status
       if (data.status === 'running') {
@@ -1135,22 +1738,35 @@ export default function SessionDetailPage() {
                   data: {
                     ...node.data,
                     status: 'done',
-                    iteration: data.current_iteration || node.data.iteration,
+                    iteration: data.current_iteration ?? node.data.iteration,
                   },
                 }
               }
               // Enhancer nodes → working only if enabled (D/F/S agents only).
               // Enh. Summarizer stays idle until it actually starts
               // (it runs only after all enhancer agents finish).
+              // VR-40 — preserve `done` / `error` / `timeout` statuses on
+              // re-poll: if a D/F/S agent has already finished (and we
+              // flipped its status to `done` when the Summarizer started),
+              // a periodic loadSession() must NOT re-pulse it just because
+              // session.status is still `enhancing`. Only idle nodes get
+              // promoted to working here.
               if (node.id.startsWith('enhancer-') && node.id !== 'enhancer-summarizer') {
                 const enhancerConfigs = data.agent_configs || session?.agent_configs || []
                 const isEnabledEnhancer =
                   enhancerConfigs.some((c: any) => c.agent_type === node.data.agentType && c.enabled !== false)
+                const preserveExisting =
+                  node.data.status === 'done' ||
+                  node.data.status === 'error' ||
+                  node.data.status === 'timeout' ||
+                  node.data.status === 'working'
                 return {
                   ...node,
                   data: {
                     ...node.data,
-                    status: isEnabledEnhancer ? 'working' : 'idle',
+                    status: preserveExisting
+                      ? node.data.status
+                      : (isEnabledEnhancer ? 'working' : 'idle'),
                   },
                 }
               }
@@ -1169,7 +1785,7 @@ export default function SessionDetailPage() {
                 data: {
                   ...node.data,
                   status: 'done',
-                  iteration: data.current_iteration || node.data.iteration,
+                  iteration: data.current_iteration ?? node.data.iteration,
                 },
               }
             })
@@ -1302,11 +1918,41 @@ export default function SessionDetailPage() {
     const newNodes: any[] = []
     const newEdges: any[] = []
 
-    const coders = sessionData.agent_configs.filter(a => a.agent_type === 'coder')
-    const testers = sessionData.agent_configs.filter(a => a.agent_type === 'tester')
-    const summarizer = sessionData.agent_configs.find(a => a.agent_type === 'summarizer')
-    const finalizer = sessionData.agent_configs.find(a => a.agent_type === 'finalizer')
-    const enhancerConfigs = sessionData.agent_configs.filter(a => ['enhancer_design', 'enhancer_func', 'enhancer_security'].includes(a.agent_type))
+    // КАО#VR-13 NodeCountFix — derive node counts from agent_configs filtered by
+    // BOTH agent_type AND enabled. Previously, disabled coder/tester rows still
+    // produced React Flow nodes (e.g. 3 boxes when only 1 actually runs),
+    // creating a UI/DB mismatch. Legacy sessions with empty agent_configs fall
+    // back to the original (unfiltered) behavior with a console warning so we
+    // don't silently render zero nodes for old data.
+    const allConfigs = sessionData.agent_configs || []
+    const hasAnyConfigs = allConfigs.length > 0
+    if (!hasAnyConfigs) {
+      console.warn('[КАО#VR-13 NodeCountFix] Session has empty agent_configs — falling back to legacy unfiltered behavior')
+    }
+    const isActive = (a: AgentConfigResponse) => a.enabled !== false
+    // КАО#VR-20 NodeOrder — sort by agent_index so coder_0/tester_0 always render
+    // above coder_1/tester_1, regardless of DB row insertion order (which can be
+    // shuffled when agent_configs are recreated via /restart).
+    const coders = allConfigs
+      .filter(a => a.agent_type === 'coder' && (hasAnyConfigs ? isActive(a) : true))
+      .sort((a, b) => a.agent_index - b.agent_index) // КАО#VR-20 NodeOrder
+    const testers = allConfigs
+      .filter(a => a.agent_type === 'tester' && (hasAnyConfigs ? isActive(a) : true))
+      .sort((a, b) => a.agent_index - b.agent_index) // КАО#VR-20 NodeOrder
+    const summarizer = allConfigs.find(a => a.agent_type === 'summarizer' && isActive(a))
+    const finalizer = allConfigs.find(a => a.agent_type === 'finalizer' && isActive(a))
+    // Enhancer count is per-type (each enhancer_* counted separately); enabled
+    // filter is applied at render time below (lines ~2071-2073) so disabled
+    // enhancers still render as visibly-greyed-out nodes — preserve that.
+    // КАО#VR-20 NodeOrder — sort enhancers alphabetically by agent_type
+    // (design, func, security) for stable vertical ordering; tiebreak by
+    // agent_index for future multi-instance enhancer support.
+    const enhancerConfigs = allConfigs
+      .filter(a => ['enhancer_design', 'enhancer_func', 'enhancer_security'].includes(a.agent_type))
+      .sort((a, b) => {
+        const t = a.agent_type.localeCompare(b.agent_type)
+        return t !== 0 ? t : a.agent_index - b.agent_index
+      }) // КАО#VR-20 NodeOrder
 
     // Calculate vertical center for each column
     const maxAgents = Math.max(coders.length, testers.length)
@@ -1547,12 +2193,15 @@ export default function SessionDetailPage() {
 
     // 7. Enhancement Loop nodes — below the main pipeline
     // Layout: ES (left) ← [D/F/S stacked vertically] (right) ← Final Code (top)
-    const enhancerY = centerY + Math.max(coders.length, testers.length) * VERTICAL_GAP / 2 + VERTICAL_GAP + 20
+    // Inter-row gap must be > 2 * GroupFramesLayer.PADDING (56) so the CODERS/TESTERS
+    // frame bottom doesn't overlap with the ENHANCERS frame top.
+    // 130px extra (was 20) gives ~74px margin between frames.
+    const enhancerY = centerY + Math.max(coders.length, testers.length) * VERTICAL_GAP / 2 + VERTICAL_GAP + 130
     const enhAgentNames = ['design', 'functionality', 'security']
     const enhAgentLabels = ['Design', 'Functionality', 'Security']
     const enhAgentTypes = ['enhancer_design', 'enhancer_func', 'enhancer_security']
     const enhAgentsX = finalizerX  // D/F/S column — below Finalizer
-    const enhVerticalGap = 90
+    const enhVerticalGap = VERTICAL_GAP  // same gap as coders/testers (180) — node height is 140, so 40px visible gap
     const esX = codersX  // ES — below Coders
 
     // D/F/S stacked vertically
@@ -1634,10 +2283,9 @@ export default function SessionDetailPage() {
     setEdges(newEdges)
   }
 
-  // Keep the ref pointing at the latest handleWSMessage to avoid stale closures
-  useEffect(() => {
-    handleWSMessageRef.current = handleWSMessage
-  })
+  // Keep the ref pointing at the latest handleWSMessage to avoid stale closures.
+  // Intentionally no dependency array — must run on every render to capture latest closure.
+  handleWSMessageRef.current = handleWSMessage
 
   // Cleanup all tracked timeouts on unmount
   useEffect(() => {
@@ -1663,7 +2311,7 @@ export default function SessionDetailPage() {
       if (iframe?.contentWindow) {
         iframe.contentWindow.postMessage(
           { type: 'codeforge-preview', html: browserPreviewHtml },
-          '*'
+          '*'  // Same-origin sandbox iframe — wildcard is safe here
         )
       }
     }
@@ -1688,11 +2336,105 @@ export default function SessionDetailPage() {
     }
   }, [browserPreviewHtml, browserPreviewKey, showBrowserPreview])
 
+  // Keyboard shortcuts
+  // Улучшатели#3 wave 2 #7 — wire `?`, add space/c/i, document existing.
+  // Existing: Esc (close panels), p (toggle preview).
+  // New: ? (open shortcuts help modal), space (toggle pause/resume on
+  // running/paused), c (focus most-recent code viewer), i (open intervention).
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Don't fire shortcuts when typing in inputs/textareas
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      // contenteditable surfaces (e.g. react-flow node labels) — bail out too
+      if ((e.target as HTMLElement)?.isContentEditable) return
+
+      switch (e.key) {
+        case 'Escape':
+          // Close panels/modals
+          if (shortcutsHelpOpen) setShortcutsHelpOpen(false)
+          else if (showBrowserPreview) setShowBrowserPreview(false)
+          else if (selectedNode) setSelectedNode(null)
+          break
+        case 'p':
+          // Toggle preview
+          if (!e.ctrlKey && !e.metaKey) {
+            setShowBrowserPreview(prev => !prev)
+          }
+          break
+        case '?':
+          // Show shortcuts help modal (Улучшатели#3 wave 2 #7)
+          e.preventDefault()
+          setShortcutsHelpOpen(prev => !prev)
+          break
+        case ' ':
+        case 'Spacebar':
+          // Улучшатели#3 wave 2 #7 — space toggles pause/resume on running/paused.
+          // Read session via ref-free state pointer; we already have `session` in deps.
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+            if (session?.status === 'running') {
+              e.preventDefault()
+              handlePause()
+            } else if (session?.status === 'paused') {
+              e.preventDefault()
+              handleResume()
+            }
+          }
+          break
+        case 'c':
+          // Улучшатели#3 wave 2 #7 — focus most-recent code viewer.
+          // We prefer the View Result panel when a final result exists,
+          // else fall back to opening the DetailPanel for the most-recent
+          // working/done coder node.
+          if (!e.ctrlKey && !e.metaKey) {
+            if (finalResult) {
+              setShowCode(true)
+            } else {
+              // Find the highest-numbered coder node that's done or working
+              const candidate = [...nodes]
+                .filter((n: any) => n.id.startsWith('coder-'))
+                .sort((a: any, b: any) => {
+                  const ai = parseInt(a.id.split('-')[1] || '0', 10)
+                  const bi = parseInt(b.id.split('-')[1] || '0', 10)
+                  return bi - ai
+                })
+                .find((n: any) => n.data?.status === 'done' || n.data?.status === 'working')
+              if (candidate) {
+                setSelectedNode(candidate.id)
+                setSelectedNodeData(candidate.data)
+              }
+            }
+          }
+          break
+        case 'i':
+          // Улучшатели#3 wave 2 #7 — open the intervention panel.
+          if (!e.ctrlKey && !e.metaKey) {
+            setShowIntervention(true)
+            // КАО#W4-FIX-03 — match the header Intervene button (line ~4517)
+            // so the side-panel breadcrumb (Wave 3 P2·M) records keyboard
+            // openings too. Without this the breadcrumb only tracked
+            // header-button openings, silently missing shortcut paths.
+            pushPanel('intervention')
+          }
+          break
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBrowserPreview, selectedNode, shortcutsHelpOpen, session?.status, finalResult, nodes])
+
   function handleWSMessage(message: { type: string; data?: Record<string, unknown> }) {
     const { type, data } = message
 
     switch (type) {
       case 'workflow_started':
+        // Suppress the auto-zoom-to-coder that fires on the first agent_started
+        // event right after Start. Subsequent agent transitions still pan as usual.
+        skipNextAutoPanRef.current = true
+        // Reset base auto-pan zoom: next pan will re-capture user's current
+        // viewport zoom (so the +10% target tracks any manual zoom they did).
+        autoPanBaseZoomRef.current = null
         if (data?.re_finalize) {
           // Re-finalize: skip coding phase, go straight to finalizing
           setWorkflowState(prev => ({
@@ -1719,10 +2461,11 @@ export default function SessionDetailPage() {
           // Activate coders on workflow start (first iteration)
           scheduleTimeout(() => {
             updateAllAgentStatuses('coder', 'working')
-            // Animate edges from input to all coders
+            // Animate edges from input (and enhancer-summarizer for enhancement sessions) to all coders
+            const isEnhancementSession = !!session?.parent_session_id
             setEdges((eds: any[]) =>
               eds.map((edge: any) => {
-                if (edge.source === 'input') {
+                if (edge.source === 'input' || (isEnhancementSession && edge.source === 'enhancer-summarizer')) {
                   return {
                     ...edge,
                     data: {
@@ -1775,10 +2518,11 @@ export default function SessionDetailPage() {
               return node
             })
           )
-          // Animate edges from input to active coders only
+          // Animate edges from input (and enhancer-summarizer for enhancement sessions) to active coders only
+          const isEnhancementSession = !!session?.parent_session_id
           setEdges((eds: any[]) =>
             eds.map((edge: any) => {
-              if (edge.source === 'input') {
+              if (edge.source === 'input' || (isEnhancementSession && edge.source === 'enhancer-summarizer')) {
                 const targetCoderIndex = parseInt(edge.target.split('-')[1])
                 const isActive = activeCoders.length > 0
                   ? activeCoders.includes(targetCoderIndex)
@@ -1813,19 +2557,29 @@ export default function SessionDetailPage() {
               activeCoderCount: activeCoders.length || 1,
               testerCompletions: {},  // Reset per-tester completion counts
             }))
-            // Testers will get 'working' from individual agent_started events
+            // VR-43 — Start pulsing testers immediately. Without this there's
+            // a visible gap between phase_started('testing') and the first
+            // per-tester `agent_started` event (during which coders are
+            // 'waiting' and testers haven't begun yet — nothing pulses).
+            // Individual `agent_started` events still arrive to refine
+            // timeouts; this just bridges the visual gap.
+            updateAllAgentStatuses('tester', 'working')
           } else if (phase === 'summarizing') {
             // All testers are done — set them all to 'done' (catch-all)
             updateAllAgentStatuses('tester', 'done')
             updateNodeStatus('summarizer', undefined, 'working', {
-              timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+              agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+              requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
             })
             animateEdgesToNode('summarizer', undefined)
+            panToGroup('summarizer')
           } else if (phase === 'finalizing') {
             updateNodeStatus('finalizer', undefined, 'working', {
-              timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+              agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+              requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
             })
             animateEdgesToNode('finalizer', undefined)
+            panToGroup('finalizer')
           }
         }
         break
@@ -1836,10 +2590,39 @@ export default function SessionDetailPage() {
           const agentIndex = data.agent_index as number | undefined
           const coderIndex = data.coder_index as number | undefined
 
+          // КАО#VR-26 — back-fill workflow phase from agent_type when
+          // `phase_started` events were dropped (e.g. WS disconnect during
+          // the Visual Review pause meant the resume's phase_started("finalizing")
+          // never reached us, so the top-of-canvas pill stayed at
+          // "Coding (iteration N)" while the Finalizer node was clearly Executing).
+          // PHASE_BY_AGENT lives at module scope (above) so tests can import it.
+          const derivedPhase = (PHASE_BY_AGENT as Record<string, string>)[agentType]
+          if (derivedPhase) {
+            setWorkflowState(prev => prev.phase === derivedPhase ? prev : { ...prev, phase: derivedPhase })
+          }
+
+          // Notify the onboarding tour that we have a real working agent on
+          // screen — Tour 3 (Live multi-agent view) waits for this so its
+          // highlights have something to point at.
+          setOnboardingAgentStarted()
+
           updateNodeStatus(agentType, agentIndex, 'working', {
-            timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
+            sandboxTimeoutAt: undefined,
+            activeSince: Date.now(),  // for elapsed-time display in AgentNode
           })
           animateEdgesToNode(agentType, agentIndex, coderIndex)
+          // Auto-scroll to the agent that just started working — but skip the
+          // very first one after workflow_started (user prefers manual viewport
+          // on Start; subsequent transitions still pan).
+          if (skipNextAutoPanRef.current) {
+            skipNextAutoPanRef.current = false
+          } else {
+            // Center on the GROUP containing this agent, not just the node
+            // (e.g. when Coder 1 starts, frame the whole Coders group).
+            panToGroup(agentType, agentIndex)
+          }
         }
         break
 
@@ -1858,7 +2641,7 @@ export default function SessionDetailPage() {
               completions[agentIndex] = (completions[agentIndex] || 0) + 1
               const allDone = completions[agentIndex] >= prev.activeCoderCount
               if (allDone) {
-                updateNodeStatus('tester', agentIndex, 'done', { ...data, timeoutAt: undefined })
+                updateNodeStatus('tester', agentIndex, 'done', { ...data, timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined, sandboxTimeoutAt: undefined })
                 stopEdgesForAgent('tester', agentIndex)
               }
               return {
@@ -1871,7 +2654,7 @@ export default function SessionDetailPage() {
             })
           } else {
             // Non-tester agents: show 'done' immediately
-            updateNodeStatus(agentType, agentIndex, 'done', { ...data, timeoutAt: undefined })
+            updateNodeStatus(agentType, agentIndex, 'done', { ...data, timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined, sandboxTimeoutAt: undefined })
             stopEdgesForAgent(agentType, agentIndex)
 
             setWorkflowState(prev => ({
@@ -1908,7 +2691,7 @@ export default function SessionDetailPage() {
             data.agent_index as number | undefined,
             isTimeout ? 'timeout' : 'error',
             {
-              timeoutAt: undefined,
+              timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined, sandboxTimeoutAt: undefined,
               ...(isTimeout && timeoutSec ? { status_text: `Timed out (${timeoutSec}s)` } : {}),
             },
           )
@@ -1973,7 +2756,8 @@ export default function SessionDetailPage() {
           updateNodeStatus('coder', coderIndex, 'executing', {
             fixAttempt: attempt,
             maxFixAttempts: maxAttempts,
-            timeoutAt: Date.now() + executionTimeoutRef.current * 1000,
+            sandboxTimeoutAt: Date.now() + executionTimeoutRef.current * 1000,
+            requestTimeoutAt: undefined,
           })
         }
         break
@@ -1996,10 +2780,12 @@ export default function SessionDetailPage() {
           const coderIndex = data.coder_index as number
           const attempt = data.attempt as number
 
-          // Use updateNodeStatus (not WithFix) to set timeoutAt for the fixing LLM call
+          // Use updateNodeStatus (not WithFix) to set timeouts for the fixing LLM call
           updateNodeStatus('coder', coderIndex, 'fixing', {
             fixAttempt: attempt,
-            timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
+            sandboxTimeoutAt: undefined,
           })
 
           notify.info(`Fixing execution error (attempt ${attempt})`, {
@@ -2087,6 +2873,12 @@ export default function SessionDetailPage() {
 
       case 'iteration_completed':
         stopAllEdgeAnimations()
+        // Refresh checkpoints after each iteration (orchestrator saves one per iter)
+        if (sessionId) {
+          listCheckpoints(sessionId)
+            .then(setCheckpoints)
+            .catch(() => { /* non-fatal */ })
+        }
         break
 
       case 'coder_finished':
@@ -2135,19 +2927,38 @@ export default function SessionDetailPage() {
         // reset all node statuses to idle, wiping pipeline "done" states).
         setSession(prev => prev ? { ...prev, status: 'enhancing' } : prev)
         setWorkflowState(prev => ({ ...prev, phase: 'enhancing' }))
-        // Mark main pipeline nodes as done (coding finished)
-        setNodes((nds: any[]) =>
-          nds.map((node: any) => {
-            if (node.id.startsWith('coder-') || node.id.startsWith('tester-') ||
-                node.id === 'summarizer' || node.id === 'finalizer' || node.id === 'output') {
-              return {
-                ...node,
-                data: { ...node.data, status: 'done' },
+        // VR-43 — Mark main pipeline as done AND start pulsing the enabled
+        // D/F/S enhancers immediately. Without this we get a visible pulse
+        // gap between `enhancer_started` (phase=enhancing) and the first
+        // per-agent `enhancer_agent_started`: the user sees "phase active
+        // but nothing is pulsing", which looks like the process is stuck
+        // waiting on user input. Per-agent timeouts are filled in later by
+        // the individual `enhancer_agent_started` events.
+        {
+          const enabledEnhancerTypes = new Set(
+            (session?.agent_configs || [])
+              .filter((c: any) => c.agent_type?.startsWith('enhancer_')
+                && c.agent_type !== 'enhancer_summary'
+                && c.enabled !== false)
+              .map((c: any) => c.agent_type as string)
+          )
+          setNodes((nds: any[]) =>
+            nds.map((node: any) => {
+              // Main pipeline → done (coding finished)
+              if (node.id.startsWith('coder-') || node.id.startsWith('tester-') ||
+                  node.id === 'summarizer' || node.id === 'finalizer' || node.id === 'output') {
+                return { ...node, data: { ...node.data, status: 'done' } }
               }
-            }
-            return node
-          })
-        )
+              // Enabled D/F/S enhancers → start pulsing immediately
+              if (node.id.startsWith('enhancer-') && node.id !== 'enhancer-summarizer') {
+                if (enabledEnhancerTypes.has(node.data.agentType)) {
+                  return { ...node, data: { ...node.data, status: 'working' } }
+                }
+              }
+              return node
+            })
+          )
+        }
         // Stop all main pipeline edge animations
         setEdges((eds: any[]) =>
           eds.map((edge: any) => {
@@ -2164,7 +2975,8 @@ export default function SessionDetailPage() {
         const enhNodeId = enhancerTypeToNodeId(String(data?.agent_type || ''))
         if (enhNodeId) {
           updateEnhancerNode(enhNodeId, 'working', {
-            timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+            requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
           })
           // Animate edges flowing into this enhancement node
           setEdges((eds: any[]) =>
@@ -2175,6 +2987,9 @@ export default function SessionDetailPage() {
               return edge
             })
           )
+          // Auto-scroll: center on the enhancer's group (Design/Func/Security
+          // siblings) for a contextual frame, not just the single node.
+          panToGroup(String(data?.agent_type || ''))
         }
         break
       }
@@ -2182,8 +2997,24 @@ export default function SessionDetailPage() {
       case 'enhancer_agent_completed': {
         const enhNodeId = enhancerTypeToNodeId(String(data?.agent_type || ''))
         if (enhNodeId) {
-          updateEnhancerNode(enhNodeId, 'done', { timeoutAt: undefined })
-          // Stop incoming edge animations, animate outgoing edges
+          // VR-40 — keep the enhancer node in `working` state (pulse stays on)
+          // even after this individual agent finished. The "Enhancement phase"
+          // isn't over until the Summarizer starts, so the visual pulse must
+          // continue until then. We DO clear timeouts and stash a per-agent
+          // "finished" marker so the AgentNode can render a small completion
+          // badge (suggestions count) without dropping the pulse animation.
+          const suggestionsCount = Number(data?.suggestions_count ?? 0)
+          updateEnhancerNode(enhNodeId, 'working', {
+            agentTimeoutAt: undefined,
+            requestTimeoutAt: undefined,
+            timeoutAt: undefined,
+            agentFinishedAt: Date.now(),
+            status_text: suggestionsCount > 0
+              ? `✓ ${suggestionsCount} suggestion${suggestionsCount === 1 ? '' : 's'} ready`
+              : '✓ Complete',
+          })
+          // Stop incoming edge animations, animate outgoing edges. The node
+          // itself keeps pulsing but its in-flow is no longer active.
           setEdges((eds: any[]) =>
             eds.map((edge: any) => {
               if (edge.target === enhNodeId) {
@@ -2208,7 +3039,7 @@ export default function SessionDetailPage() {
           const timeoutSec = timeoutMatch ? timeoutMatch[1] : null
 
           updateEnhancerNode(enhNodeId, isTimeout ? 'timeout' : 'error', {
-            timeoutAt: undefined,
+            timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined,
             ...(isTimeout && timeoutSec ? { status_text: `Timed out (${timeoutSec}s)` } : {}),
           })
           setEdges((eds: any[]) =>
@@ -2233,8 +3064,29 @@ export default function SessionDetailPage() {
       }
 
       case 'enhancer_summarizer_started':
+        // VR-40 — Enhancement phase (D/F/S agents) is officially over now;
+        // mark them as 'done' so their pulse stops and the visual phase
+        // baton hand-off is clean: D/F/S → idle, Summarizer → working.
+        setNodes((nds: any[]) =>
+          nds.map((node: any) => {
+            if (node.id.startsWith('enhancer-') && node.id !== 'enhancer-summarizer') {
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'done',
+                  agentTimeoutAt: undefined,
+                  requestTimeoutAt: undefined,
+                  timeoutAt: undefined,
+                },
+              }
+            }
+            return node
+          })
+        )
         updateEnhancerNode('enhancer-summarizer', 'working', {
-          timeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+          agentTimeoutAt: Date.now() + agentTimeoutRef.current * 1000,
+          requestTimeoutAt: Date.now() + requestTimeoutRef.current * 1000,
         })
         setEdges((eds: any[]) =>
           eds.map((edge: any) => {
@@ -2244,10 +3096,23 @@ export default function SessionDetailPage() {
             return edge
           })
         )
+        // Auto-scroll to the Enhancers group (summarizer is the final stage)
+        panToGroup('enhancer_summary')
         break
 
       case 'enhancer_summarizer_completed':
-        updateEnhancerNode('enhancer-summarizer', 'done', { timeoutAt: undefined })
+        // VR-40 — keep the Summarizer node pulsing until the session
+        // transitions to `awaiting_enhancement_review`. Between this event
+        // and the review event there's a DB commit (line 2885-2891 in
+        // backend) plus broadcast latency; the pulse must not die during
+        // that gap. We only update the status_text + outgoing-edge anim.
+        updateEnhancerNode('enhancer-summarizer', 'working', {
+          agentTimeoutAt: undefined,
+          requestTimeoutAt: undefined,
+          timeoutAt: undefined,
+          agentFinishedAt: Date.now(),
+          status_text: '✓ Summary ready',
+        })
         setEdges((eds: any[]) =>
           eds.map((edge: any) => {
             if (edge.target === 'enhancer-summarizer') {
@@ -2268,7 +3133,7 @@ export default function SessionDetailPage() {
         const timeoutSec = timeoutMatch ? timeoutMatch[1] : null
 
         updateEnhancerNode('enhancer-summarizer', isTimeout ? 'timeout' : 'error', {
-          timeoutAt: undefined,
+          timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined,
           ...(isTimeout && timeoutSec ? { status_text: `Timed out (${timeoutSec}s)` } : {}),
         })
         setEdges((eds: any[]) =>
@@ -2300,6 +3165,59 @@ export default function SessionDetailPage() {
 
       case 'awaiting_enhancement_review':
         notify.success('Enhancement analysis complete — review suggestions')
+        // VR-40 — phase is officially over now: stop the Summarizer pulse
+        // (we deferred it from `enhancer_summarizer_completed` so the pulse
+        // bridges the DB-commit gap between completion and this event).
+        // Also defensively mark D/F/S as 'done' in case the
+        // `enhancer_summarizer_started` handler somehow missed them.
+        setNodes((nds: any[]) =>
+          nds.map((node: any) => {
+            if (node.id.startsWith('enhancer-')) {
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'done',
+                  agentTimeoutAt: undefined,
+                  requestTimeoutAt: undefined,
+                  timeoutAt: undefined,
+                },
+              }
+            }
+            return node
+          })
+        )
+        loadSession()
+        break
+
+      // КАО#VR-Wave1 Frontend — Visual Review: backend emits this when
+      // candidate screenshots are ready and the workflow has paused for
+      // user scoring. We refresh session state (status flips to
+      // 'awaiting_visual_review') which triggers the auto-open effect.
+      case 'visual_review_ready':
+        notify.success('Visual review ready — score the candidates')
+        loadSession()
+        break
+
+      // КАО#VR-11 RestartFromScratch — server flushed all artifacts and is
+      // re-running from iteration 0. Close every results / review panel so
+      // stale data doesn't linger, then reload the session so the graph
+      // rebuilds against the fresh state.
+      case 'session_restarted':
+        notify.info('Session restarted from scratch')
+        setFinalResult(null)
+        setExecutionResult(null)
+        setShowExecution(false)
+        setShowCode(false)
+        setShowBrowserPreview(false)
+        setBrowserPreviewHtml('')
+        setShowEnhancementReview(false)
+        setEnhancementSuggestions([])
+        setCuratedItems([])
+        setShowVisualReview(false)
+        setSelectedNode(null)
+        setSelectedNodeData(null)
+        setPRResult(null)
         loadSession()
         break
 
@@ -2325,7 +3243,7 @@ export default function SessionDetailPage() {
         setNodes((nds: any[]) =>
           nds.map((node: any) => {
             if (node.data?.status === 'working') {
-              return { ...node, data: { ...node.data, status: 'error', timeoutAt: undefined } }
+              return { ...node, data: { ...node.data, status: 'error', timeoutAt: undefined, agentTimeoutAt: undefined, requestTimeoutAt: undefined, sandboxTimeoutAt: undefined } }
             }
             return node
           })
@@ -2340,8 +3258,68 @@ export default function SessionDetailPage() {
         })
         break
 
+      case 'agent_streaming': {
+        // Feature #1: backend emits incremental LLM output when
+        // session.settings.streaming === true. Append partial text to the
+        // matching node and toggle isStreaming based on is_final.
+        if (!data) break
+        const agent_type = data.agent_type as string
+        const agent_index = data.agent_index as number | undefined
+        const partial_content = (data.partial_content as string) || ''
+        const is_final = data.is_final === true
+        setNodes((nds: any[]) =>
+          nds.map((n: any) => {
+            const matches =
+              n.data?.agentType === agent_type &&
+              n.data?.agentIndex === agent_index
+            if (!matches) return n
+            const prevText = (n.data.streamingContent as string | undefined) || ''
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                streamingContent: prevText + partial_content,
+                isStreaming: !is_final,
+              },
+            }
+          })
+        )
+        break
+      }
+
       case 'workflow_cancelled':
         notify.info('Workflow cancelled')
+        // КАО#VR-31 — clear streaming overlays on cancel/reset. Without
+        // this, a coder node that was mid-stream when the user clicked
+        // Cancel keeps its STREAMING badge + last partial code forever,
+        // even after the session is reset back to 'created'.
+        setNodes((nds: any[]) =>
+          nds.map((n: any) => ({
+            ...n,
+            data: {
+              ...n.data,
+              isStreaming: false,
+              streamingContent: undefined,
+            },
+          }))
+        )
+        loadSession()
+        break
+
+      case 'session_reset':
+        // КАО#VR-31 — same cleanup as workflow_cancelled. The /reset
+        // endpoint (КАО#VR-19) emits session_reset after dropping
+        // artifacts; mirror its behavior in the UI to avoid stale streams.
+        setNodes((nds: any[]) =>
+          nds.map((n: any) => ({
+            ...n,
+            data: {
+              ...n.data,
+              isStreaming: false,
+              streamingContent: undefined,
+            },
+          }))
+        )
         loadSession()
         break
     }
@@ -2366,16 +3344,25 @@ export default function SessionDetailPage() {
               ...node.data,
               status,
               status_text: (data?.status_text as string) || undefined,
-              iteration: (data?.iteration as number) || node.data.iteration,
+              iteration: (data?.iteration as number) ?? node.data.iteration,
               tokensUsed: (data?.tokens as number) ?? node.data.tokensUsed,
               costUsd: (data?.cost as number) ?? node.data.costUsd,
               issuesFound: (data?.issues_found as number) ?? node.data.issuesFound,
               fixAttempt: (data?.fixAttempt as number) ?? node.data.fixAttempt,
               maxFixAttempts: (data?.maxFixAttempts as number) ?? node.data.maxFixAttempts,
-              // Preserve timeoutAt unless explicitly set in data (even to undefined = clear)
+              // Preserve timeout fields unless explicitly set in data (even to undefined = clear)
               timeoutAt: data && 'timeoutAt' in data
                 ? (data.timeoutAt as number | undefined)
                 : node.data.timeoutAt,
+              agentTimeoutAt: data && 'agentTimeoutAt' in data
+                ? (data.agentTimeoutAt as number | undefined)
+                : node.data.agentTimeoutAt,
+              requestTimeoutAt: data && 'requestTimeoutAt' in data
+                ? (data.requestTimeoutAt as number | undefined)
+                : node.data.requestTimeoutAt,
+              sandboxTimeoutAt: data && 'sandboxTimeoutAt' in data
+                ? (data.sandboxTimeoutAt as number | undefined)
+                : node.data.sandboxTimeoutAt,
             },
           }
         }
@@ -2408,31 +3395,130 @@ export default function SessionDetailPage() {
     )
   }
 
-  function updateNodeStatusWithFix(
-    agentType: string,
-    agentIndex: number | undefined,
-    status: string,
-    fixAttempt: number
-  ) {
-    setNodes((nds: any[]) =>
-      nds.map((node: any) => {
-        const nodeId = agentIndex !== undefined
-          ? `${agentType}-${agentIndex}`
-          : agentType
+  // Group drag — click-and-hold on empty space inside a group frame, then drag
+  // → moves the entire group together (preserves relative positions).
+  // Individual node drag (clicking on a node itself) still works as React Flow default.
+  const onGroupDragStart = useCallback((groupPrefix: string, startEvent: React.MouseEvent) => {
+    const startClientX = startEvent.clientX
+    const startClientY = startEvent.clientY
+    const zoom = reactFlowInstanceRef.current?.getViewport?.()?.zoom ?? 1
 
-        if (node.id === nodeId) {
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              status,
-              fixAttempt,
-            },
-          }
-        }
-        return node
-      })
-    )
+    // Snapshot all nodes in this group at drag start
+    const snapshot = nodes
+      .filter((n: any) => n.id.startsWith(groupPrefix))
+      .map((n: any) => ({ id: n.id, x: n.position.x, y: n.position.y }))
+    if (snapshot.length === 0) return
+
+    let lastDx = NaN, lastDy = NaN
+
+    const onMove = (e: MouseEvent) => {
+      const dx = (e.clientX - startClientX) / zoom
+      const dy = (e.clientY - startClientY) / zoom
+      if (dx === lastDx && dy === lastDy) return
+      lastDx = dx; lastDy = dy
+      setNodes((curr: any[]) =>
+        curr.map((n: any) => {
+          const snap = snapshot.find(s => s.id === n.id)
+          if (snap) return { ...n, position: { x: snap.x + dx, y: snap.y + dy } }
+          return n
+        })
+      )
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'grabbing'
+  }, [nodes, setNodes])
+
+  // Auto-pan target zoom: capture the user's current viewport zoom at the FIRST
+  // auto-pan, then always pan to baseZoom * 1.1 (so every transition produces
+  // the same ~10% zoom-in and we never drift up across many phases).
+  const autoPanBaseZoomRef = useRef<number | null>(null)
+  function getZoomedInLevel(): number {
+    const rf = reactFlowInstanceRef.current
+    if (!rf) return 1.0
+    if (autoPanBaseZoomRef.current === null) {
+      const current = rf.getViewport?.()?.zoom ?? 1.0
+      autoPanBaseZoomRef.current = current
+    }
+    return autoPanBaseZoomRef.current * 1.25
+  }
+
+  // Auto-scroll: smoothly pan the graph to center on the given node (legacy,
+  // kept for single-target fallback). +10% relative zoom-in.
+  // Улучшатели#3 wave 2 #3 — respect the lockViewport toggle; bail out when locked.
+  function panToNode(nodeId: string) {
+    if (lockViewportRef.current) return
+    const rf = reactFlowInstanceRef.current
+    if (!rf) return
+    const node = rf.getNode(nodeId)
+    if (node) {
+      rf.setCenter(node.position.x + 110, node.position.y + 70, { zoom: getZoomedInLevel(), duration: 500 })
+    }
+  }
+
+  // Auto-scroll: smoothly pan/zoom to center the GROUP containing the active
+  // agent (Coders, Testers, Enhancers, etc.). Light ~10% zoom-in so the group
+  // is highlighted but the rest of the graph stays in view.
+  // Maps agent identifier → set of nodes that form the group.
+  function panToGroup(agentType: string, agentIndex?: number) {
+    // Улучшатели#3 wave 2 #3 — respect the lockViewport toggle; bail out when locked.
+    if (lockViewportRef.current) return
+    const rf = reactFlowInstanceRef.current
+    if (!rf) return
+
+    // Pick the group node id prefix (or single-node id) based on agent type
+    let prefix: string | null = null
+    let singleId: string | null = null
+    if (agentType === 'coder') prefix = 'coder-'
+    else if (agentType === 'tester') prefix = 'tester-'
+    else if (agentType === 'summarizer') singleId = 'summarizer'
+    else if (agentType === 'finalizer') singleId = 'finalizer'
+    // All enhancer_* agents belong to the Enhancers group (frame covers
+    // design/func/security AND the enhancer-summarizer below them).
+    else if (agentType.startsWith('enhancer')) prefix = 'enhancer-'
+
+    // Helper to center on a bbox
+    const NODE_W = 220, NODE_H = 140
+    const centerOnBbox = (minX: number, minY: number, maxX: number, maxY: number) => {
+      const cx = (minX + maxX) / 2
+      const cy = (minY + maxY) / 2
+      // ~10% relative zoom-in on top of the user's current viewport zoom
+      rf.setCenter(cx, cy, { zoom: getZoomedInLevel(), duration: 500 })
+    }
+
+    // Single-node group → behave like panToNode but with a richer bbox
+    if (singleId) {
+      const n = rf.getNode(singleId)
+      if (n) centerOnBbox(n.position.x, n.position.y, n.position.x + NODE_W, n.position.y + NODE_H)
+      return
+    }
+
+    if (prefix) {
+      // For enhancer types, also include design/func/security siblings as a group
+      const allNodes = rf.getNodes()
+      const groupNodes = allNodes.filter((n: any) => n.id.startsWith(prefix!))
+      if (groupNodes.length === 0) return
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const n of groupNodes) {
+        if (n.position.x < minX) minX = n.position.x
+        if (n.position.y < minY) minY = n.position.y
+        if (n.position.x + NODE_W > maxX) maxX = n.position.x + NODE_W
+        if (n.position.y + NODE_H > maxY) maxY = n.position.y + NODE_H
+      }
+      centerOnBbox(minX, minY, maxX, maxY)
+      return
+    }
+
+    // Fallback: single-node pan
+    const fallbackId = agentIndex !== undefined ? `${agentType}-${agentIndex}` : agentType
+    panToNode(fallbackId)
   }
 
   function updateAllAgentStatuses(agentType: string, status: string) {
@@ -2586,7 +3672,9 @@ export default function SessionDetailPage() {
     }
     setSelectedNode(node.id)
     setSelectedNodeData(data)
-  }, [])
+    // Улучшатели#3 P2·M — record in panel history.
+    pushPanel('detail')
+  }, [pushPanel])
 
   async function handleStart() {
     setActionLoading(true)
@@ -2600,17 +3688,81 @@ export default function SessionDetailPage() {
     }
   }
 
+  function handleOpenSaveTemplate() {
+    setTemplateName(session?.name ? `${session.name} template` : '')
+    setTemplateDescription('')
+    setShowSaveTemplate(true)
+  }
+
+  async function handleSaveTemplate() {
+    const name = templateName.trim()
+    if (!name) {
+      notify.error('Template name is required')
+      return
+    }
+    setSavingTemplate(true)
+    try {
+      await createTemplateFromSession(sessionId!, name, templateDescription.trim() || undefined)
+      notify.success('Template saved')
+      setShowSaveTemplate(false)
+      setTemplateName('')
+      setTemplateDescription('')
+    } catch (err: any) {
+      notify.error(err?.message || 'Failed to save template')
+    } finally {
+      setSavingTemplate(false)
+    }
+  }
+
   async function handlePause() {
+    // Улучшатели#3 wave 2 #1 — surface backend error message verbatim so the
+    // user sees "session status is not pauseable" when status mismatches
+    // (e.g. trying to pause `enhancing` if the backend hasn't wired that yet).
     setActionLoading(true)
     try {
       await pauseSession(sessionId!)
       notify.success('Session paused')
       loadSession()
-    } catch (err) {
-      notify.error('Failed to pause session')
+    } catch (err: any) {
+      const msg = err?.message || err?.response?.data?.detail || 'Failed to pause session'
+      notify.error(formatErrorForToast(String(msg)))
     } finally {
       setActionLoading(false)
     }
+  }
+
+  // Улучшатели#3 wave 2 #2 — Retry from failed step. No backend endpoint yet
+  // (services/api.ts has no retrySession / retryAgent helpers). Scaffolded UI
+  // wires to a placeholder so the affordance exists for design review and the
+  // wiring is one obvious change away once the backend route lands.
+  async function handleRetryFromFailed() {
+    // TODO(backend): wire to POST /api/sessions/:id/retry-from-failed once the
+    // route exists. For now we resume + toast so the user gets feedback.
+    setActionLoading(true)
+    try {
+      // Best-effort: try the existing resume path. The backend may reject this
+      // for `failed` sessions; if it does we explain and surface the error.
+      await resumeSession(sessionId!)
+      notify.success('Retry requested')
+      loadSession()
+    } catch (err: any) {
+      const msg = err?.message || err?.response?.data?.detail || 'Retry not supported yet — backend wiring pending'
+      notify.warning(formatErrorForToast(String(msg)), { title: 'Retry' })
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  // Улучшатели#3 wave 2 #2 — Retry an individual agent (from the side panel /
+  // node-level affordance shown when status is error/timeout). No backend
+  // endpoint yet; scaffolded with TODO so wiring is a one-shot follow-up.
+  async function handleRetryAgent(agentType: string, agentIndex?: number) {
+    // TODO(backend): wire to POST /api/sessions/:id/agents/:type/:index/retry.
+    // Until then, just toast so users know the button is provisional.
+    notify.info(
+      `Retry for ${agentType}${agentIndex !== undefined ? ` ${agentIndex + 1}` : ''} requested — backend wiring pending`,
+      { title: 'Retry agent' },
+    )
   }
 
   async function handleResume() {
@@ -2627,13 +3779,15 @@ export default function SessionDetailPage() {
   }
 
   async function handleCancel() {
+    // Улучшатели#3 wave 2 #1 — surface backend error verbatim (status mismatch).
     setActionLoading(true)
     try {
       await cancelSession(sessionId!)
       notify.success('Session cancelled')
       loadSession()
-    } catch (err) {
-      notify.error('Failed to cancel session')
+    } catch (err: any) {
+      const msg = err?.message || err?.response?.data?.detail || 'Failed to cancel session'
+      notify.error(formatErrorForToast(String(msg)))
     } finally {
       setActionLoading(false)
     }
@@ -2715,8 +3869,81 @@ export default function SessionDetailPage() {
     }
   }
 
+  // КАО#VR-11 RestartFromScratch — open the confirm dialog before nuking results.
+  function handleRestart() {
+    setShowRestartConfirm(true)
+  }
+
+  // КАО#VR-11 RestartFromScratch — actually call the backend after the user
+  // confirms. Closes every results panel so the UI returns to a "fresh run"
+  // state immediately rather than waiting for the WS event to arrive.
+  async function handleRestartConfirmed() {
+    setShowRestartConfirm(false)
+    setActionLoading(true)
+    try {
+      await restartSession(sessionId!)
+      // Wipe local result state so the page reflects iteration 0.
+      setFinalResult(null)
+      setExecutionResult(null)
+      setShowExecution(false)
+      setShowCode(false)
+      setShowBrowserPreview(false)
+      setBrowserPreviewHtml('')
+      setShowEnhancementReview(false)
+      setEnhancementSuggestions([])
+      setCuratedItems([])
+      setEnhancementLoading(false)
+      setShowVisualReview(false)
+      setShowIntervention(false)
+      setInterventionText('')
+      setSelectedNode(null)
+      setSelectedNodeData(null)
+      setAgentConfigPopup(null)
+      setPRResult(null)
+      setWorkflowState({
+        iteration: 0,
+        phase: 'idle',
+        codersDone: 0,
+        testersDone: 0,
+        totalTokens: 0,
+        totalCost: 0,
+        criticalIssues: 0,
+        seriousIssues: 0,
+        codeVersions: {},
+        finishedCoders: new Set(),
+        coderIterations: {},
+        coderFinishReasons: {},
+        activeCoderCount: 0,
+        testerCompletions: {},
+      })
+      notify.success('Session restarted from scratch')
+      loadSession()
+    } catch (err: any) {
+      const msg = err?.message || err?.response?.data?.detail || 'Failed to restart session'
+      notify.error(formatErrorForToast(String(msg)))
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   async function handleRunEnhancement() {
     if (!session) return
+    // VR-36 — Ref-guard against double-click race. React batches setState so
+    // two rapid clicks both see enhancementLoading=false on entry; the ref is
+    // synchronous and blocks the second call instantly.
+    if (enhancementInflightRef.current) return
+    // VR-36 — Pre-check status. Backend CAS only accepts COMPLETED,
+    // AWAITING_ENHANCEMENT, CREATED. If the local state has drifted into
+    // ENHANCING / AWAITING_ENHANCEMENT_REVIEW (the previous run already
+    // finished, but WS event was missed), refetch silently and skip the call
+    // — we'd otherwise hit a 409 that produced a scary error toast.
+    const validStartStates = ['completed', 'awaiting_enhancement', 'created']
+    if (!validStartStates.includes(session.status)) {
+      notify.info('Session state changed — refreshing…')
+      try { await loadSession() } catch { /* surfaced by loadSession itself */ }
+      return
+    }
+    enhancementInflightRef.current = true
     setEnhancementLoading(true)
     try {
       // Build enhance request from session's enhancer agent_configs
@@ -2756,8 +3983,17 @@ export default function SessionDetailPage() {
       // handle the state transition. Calling loadSession() would rebuild the graph
       // and reset enhancer nodes to idle, killing their breathing animations.
     } catch (err) {
-      notify.error(`Failed to start enhancement: ${err}`)
+      // VR-36 — distinguish 409 "state changed" from other failures. On 409 we
+      // silently refresh; on real errors we keep the scary toast.
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (errMsg.includes('409') || errMsg.includes('already being enhanced') || errMsg.includes('changed state')) {
+        notify.info('Session state changed — refreshing…')
+        try { await loadSession() } catch { /* loadSession surfaces its own errors */ }
+      } else {
+        notify.error(`Failed to start enhancement: ${errMsg}`)
+      }
     } finally {
+      enhancementInflightRef.current = false
       setEnhancementLoading(false)
     }
   }
@@ -2771,6 +4007,70 @@ export default function SessionDetailPage() {
     }
     if (c.endsWith('```')) c = c.slice(0, -3)
     return c.trim()
+  }
+
+  // VR-39 — per-item attachment helpers for user-authored enhancements.
+  // The state lives inside each curatedItems[idx].attachments. These wrap
+  // the same uploadFiles / fetchRepo APIs the Specification dialog uses,
+  // so file size + URL validation stay consistent across the app.
+  const [repoUrlByIdx, setRepoUrlByIdx] = useState<Record<number, string>>({})
+  const [busyAttachIdx, setBusyAttachIdx] = useState<number | null>(null)
+
+  const handleEnhUploadFiles = async (idx: number, files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setBusyAttachIdx(idx)
+    try {
+      const arr = Array.from(files)
+      const result = await uploadFiles(arr)
+      if (result.attachments && result.attachments.length > 0) {
+        const updated = [...curatedItems]
+        const existing = (updated[idx].attachments ?? []) as AttachmentInfo[]
+        updated[idx] = { ...updated[idx], attachments: [...existing, ...result.attachments] }
+        setCuratedItems(updated)
+        notify.success(`Attached ${result.attachments.length} file(s)`)
+      }
+      if (result.errors && result.errors.length > 0) {
+        notify.error(result.errors.join('\n'))
+      }
+    } catch (err) {
+      notify.error(`File upload failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusyAttachIdx(null)
+    }
+  }
+
+  const handleEnhFetchRepo = async (idx: number) => {
+    const raw = (repoUrlByIdx[idx] || '').trim()
+    if (!raw) {
+      notify.error('Enter a git repo URL first')
+      return
+    }
+    setBusyAttachIdx(idx)
+    try {
+      const result = await fetchRepo({ url: raw })
+      if (result.attachment) {
+        const updated = [...curatedItems]
+        const existing = (updated[idx].attachments ?? []) as AttachmentInfo[]
+        updated[idx] = { ...updated[idx], attachments: [...existing, result.attachment] }
+        setCuratedItems(updated)
+        setRepoUrlByIdx({ ...repoUrlByIdx, [idx]: '' })
+        notify.success(`Attached repo ${result.attachment.repo_name || raw}`)
+      }
+      if (result.errors && result.errors.length > 0) {
+        notify.error(result.errors.join('\n'))
+      }
+    } catch (err) {
+      notify.error(`Repo fetch failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusyAttachIdx(null)
+    }
+  }
+
+  const handleEnhRemoveAttachment = (idx: number, attIdx: number) => {
+    const updated = [...curatedItems]
+    const existing = (updated[idx].attachments ?? []) as AttachmentInfo[]
+    updated[idx] = { ...updated[idx], attachments: existing.filter((_, i) => i !== attIdx) }
+    setCuratedItems(updated)
   }
 
   // Parse raw EnhancementSuggestion[] into CuratedSuggestion[]
@@ -2846,6 +4146,8 @@ export default function SessionDetailPage() {
       setShowExecution(false)
       setSelectedNode(null)
       setSelectedNodeData(null)
+      // Улучшатели#3 P2·M — record in panel history.
+      pushPanel('enhancement')
     } catch (err) {
       notify.error('Failed to load enhancement suggestions')
     } finally {
@@ -2860,6 +4162,7 @@ export default function SessionDetailPage() {
       return
     }
     setEnhancementLoading(true)
+    setShowEnhancementReview(false)
     try {
       const curated: CuratedSuggestion[] = selected.map(({ selected: _s, editing: _e, ...rest }) => rest)
       const result = await applyEnhancements(sessionId!, curated)
@@ -2928,6 +4231,8 @@ export default function SessionDetailPage() {
     setShowIntervention(false)
     setSelectedNode(null)
     setSelectedNodeData(null)
+    // Улучшатели#3 P2·M — record in panel history when Run opens a new panel.
+    pushPanel('browser')
     setBrowserPreviewHtml(buildOutputHtml('⏳ Executing in sandbox...', '', true))
     setBrowserPreviewKey(k => k + 1)
     setExecutionResult(null)
@@ -2975,6 +4280,8 @@ export default function SessionDetailPage() {
     setShowExecution(false)
     setShowCode(false)
     setShowIntervention(false)
+    // Улучшатели#3 P2·M — record in panel history.
+    pushPanel('browser')
 
     notify.warning(`Running intermediate code: ${title}. May contain errors.`, { title: '⚠ Intermediate Code' })
     setBrowserPreviewHtml(buildOutputHtml('⏳ Executing intermediate code...', '', true))
@@ -3040,6 +4347,8 @@ export default function SessionDetailPage() {
     setShowIntervention(false)
     setSelectedNode(null)
     setSelectedNodeData(null)
+    // Улучшатели#3 P2·M — record in panel history.
+    pushPanel('browser')
 
     // ── javascript_browser: code is a self-contained HTML page → render directly ──
     if (lang === 'javascript_browser' || lang === 'typescript_browser') {
@@ -3236,6 +4545,9 @@ export default function SessionDetailPage() {
       awaiting_enhancement: 'bg-purple-500',
       enhancing: 'bg-purple-500 animate-pulse',
       awaiting_enhancement_review: 'bg-amber-500',
+      // КАО#VR-Wave1 Frontend — Visual Review: warning-toned pill to signal
+      // the workflow is paused on user input.
+      awaiting_visual_review: 'bg-amber-500 animate-pulse',
     }
     return colors[status] || 'bg-gray-500'
   }
@@ -3245,21 +4557,122 @@ export default function SessionDetailPage() {
       awaiting_enhancement: 'Awaiting Enhancement',
       enhancing: 'Enhancing...',
       awaiting_enhancement_review: 'Enhancement Review',
+      // КАО#VR-Wave1 Frontend — Visual Review label.
+      awaiting_visual_review: '🎨 Awaiting Visual Review',
     }
     return labels[status] || status
   }
 
-  const coders = session?.agent_configs.filter(a => a.agent_type === 'coder') || []
-  const testers = session?.agent_configs.filter(a => a.agent_type === 'tester') || []
+  // Улучшатели#3 wave 2 #8 — humanize the workflow phase indicator. The raw
+  // values (`coding`, `testing`, `summarizing`, …) used to render lowercase via
+  // CSS capitalize, which was both unfriendly and ambiguous (which iteration?).
+  function humanizePhase(phase: string | undefined, iteration: number): string {
+    if (!phase) return ''
+    const iter = iteration > 0 ? iteration : 1
+    switch (phase) {
+      case 'coding':       return `Coding (iteration ${iter})`
+      case 'testing':      return `Testing (iteration ${iter})`
+      case 'summarizing':  return 'Summarizing audits'
+      case 'finalizing':   return 'Finalizing winner'
+      case 'enhancing':    return 'Enhancing'
+      case 'completed':    return 'Completed'
+      case 'idle':         return 'Idle'
+      default:
+        // Capitalise first letter as a safe fallback for unknown phases.
+        return phase.charAt(0).toUpperCase() + phase.slice(1)
+    }
+  }
+
+  // КАО#VR-13 NodeCountFix — only count ENABLED coder/tester rows so the UI
+  // text ("• N coders • M testers") and totalCoders prop match what actually
+  // runs. Legacy sessions with empty agent_configs keep their previous count.
+  const _allConfigs = session?.agent_configs || []
+  const _hasConfigs = _allConfigs.length > 0
+  // КАО#VR-20 NodeOrder — keep this filter consistent with buildGraph(): sort
+  // by agent_index so counts and any index-based UI stay in stable order even
+  // when agent_configs DB rows come back shuffled.
+  const coders = _allConfigs
+    .filter(a => a.agent_type === 'coder' && (_hasConfigs ? a.enabled !== false : true))
+    .sort((a, b) => a.agent_index - b.agent_index) // КАО#VR-20 NodeOrder
+  const testers = _allConfigs
+    .filter(a => a.agent_type === 'tester' && (_hasConfigs ? a.enabled !== false : true))
+    .sort((a, b) => a.agent_index - b.agent_index) // КАО#VR-20 NodeOrder
+
+  // Улучшатели#3 wave 2 #9 — MetricsPanel issues block was dead because
+  // criticalIssues/seriousIssues state was never updated by any WS event.
+  // We don't have severity breakdown on agent events; the next-best signal is
+  // `issuesFound` set on tester nodes via updateNodeStatus in agent_completed.
+  // We surface the aggregate count as `seriousIssues` so the panel renders a
+  // live number during testing phases (instead of always being hidden).
+  // TODO(backend): when tester events emit critical/serious breakdown, swap
+  // these to the dedicated counters.
+  const aggregatedTesterIssues = useMemo(() => {
+    let total = 0
+    for (const n of nodes as any[]) {
+      const a = (n.data?.agentType as string | undefined) || ''
+      if (a === 'tester' || a.startsWith('enhancer')) {
+        const v = n.data?.issuesFound
+        if (typeof v === 'number' && v > 0) total += v
+      }
+    }
+    return total
+  }, [nodes])
+  const displayCriticalIssues = workflowState.criticalIssues || 0
+  const displaySeriousIssues = (workflowState.seriousIssues || 0) + aggregatedTesterIssues
+
+  // Улучшатели#3 P2·M — Side-panel breadcrumb.
+  // Renders the panel-history chip row at the top of each side panel. Skipped
+  // when there's only one entry (current panel) since there's nothing to
+  // navigate back to.
+  const renderPanelBreadcrumb = (current: PanelKey) => {
+    if (panelHistory.length <= 1) return null
+    return (
+      <div className="px-3 py-1.5 border-b border-gray-700/60 bg-gray-900/40 flex items-center gap-1 text-[11px] text-gray-400 overflow-x-auto">
+        {panelHistory.map((key, idx) => {
+          const isCurrent = key === current
+          return (
+            <span key={`${key}-${idx}`} className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isCurrent) switchToPanel(key)
+                }}
+                className={`px-1.5 py-0.5 rounded transition-colors ${
+                  isCurrent
+                    ? 'bg-indigo-600/30 text-indigo-200 cursor-default'
+                    : 'hover:bg-gray-700/60 text-gray-300 hover:text-white cursor-pointer'
+                }`}
+                title={isCurrent ? `Currently viewing ${PANEL_LABELS[key]}` : `Switch back to ${PANEL_LABELS[key]}`}
+                disabled={isCurrent}
+              >
+                {PANEL_LABELS[key]}
+              </button>
+              {idx < panelHistory.length - 1 && (
+                <ChevronRight className="w-3 h-3 text-gray-600 flex-shrink-0" aria-hidden="true" />
+              )}
+            </span>
+          )
+        })}
+      </div>
+    )
+  }
 
   if (!sessionId) return <Navigate to="/sessions" />
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-gray-900">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 animate-spin text-indigo-500 mx-auto mb-4" />
-          <p className="text-gray-400">Loading session...</p>
+      <div className="flex flex-col h-full bg-cf-bg p-4 gap-4 animate-pulse">
+        {/* Top bar skeleton */}
+        <div className="h-16 bg-cf-panel rounded-lg" />
+        {/* Main canvas + sidebar */}
+        <div className="flex-1 flex gap-4">
+          <div className="flex-1 bg-cf-panel/50 rounded-lg" />
+          <div className="w-80 bg-cf-panel rounded-lg space-y-3 p-4">
+            <div className="h-6 bg-cf-border rounded w-3/4" />
+            <div className="h-4 bg-cf-border rounded w-1/2" />
+            <div className="h-4 bg-cf-border rounded w-2/3" />
+            <div className="h-32 bg-cf-border rounded" />
+          </div>
         </div>
       </div>
     )
@@ -3356,7 +4769,7 @@ export default function SessionDetailPage() {
               </div>
               <div className="flex items-center gap-3 mt-0.5">
                 <span className="text-sm text-gray-400">
-                  Iteration {workflowState.iteration || session.current_iteration} / {session.max_iterations}
+                  Iteration {Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1} / {session.max_iterations}
                 </span>
                 <span className="text-sm text-gray-500">
                   • {coders.length} coders • {testers.length} testers
@@ -3365,53 +4778,68 @@ export default function SessionDetailPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 whitespace-nowrap flex-shrink-0">
-            {/* Settings gear */}
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center justify-center w-9 h-9 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors"
-              title="Session Settings"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
+          <div className="flex items-center gap-1.5 flex-wrap justify-end max-w-[72%]">
+            {/* ============================================================
+                VR-35 toolbar reorganization — buttons grouped left → right:
+                  Group A (primary code): Run Code · View Result
+                  Group B (workflow lifecycle): Start · Pause · Resume · Cancel ·
+                    Review-candidates · Skip-review · Enhance · View/Apply
+                    Enhancements · Skip & Complete
+                  Group C (recovery): Retry-from-failed · Re-finalize · Restart ·
+                    Reset
+                  Group D (communication): Intervene
+                  Group E (utility, icons rightmost): Save Template · Lock ·
+                    Help · Settings · ⋯ overflow
+                Visual separators (vertical bars) divide each group.
+                ============================================================ */}
 
-            {/* Reset button for non-running sessions */}
-            {(session.status === 'failed' || session.status === 'completed' || session.status === 'cancelled') && (
-              <button
-                onClick={handleReset}
-                disabled={actionLoading}
-                className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
-              >
-                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
-                Reset
-              </button>
+            {/* === Group A: primary code result actions === */}
+            {finalResult && (
+              <>
+                <button
+                  onClick={handleRunCode}
+                  disabled={executing}
+                  className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700"
+                  data-tour="run-code-btn"
+                  title="Execute the finalized code in the sandbox"
+                >
+                  {executing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  Run Code
+                </button>
+                <button
+                  onClick={() => {
+                    const next = !showCode
+                    setShowCode(next)
+                    if (next) pushPanel('code')
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                    showCode
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-gray-700 hover:bg-gray-600 text-white'
+                  }`}
+                  title="Show / hide the Final Result side panel"
+                >
+                  <Code className="w-4 h-4" />
+                  View Result
+                </button>
+                <div className="w-px h-7 bg-gray-700 mx-1" aria-hidden="true" />
+              </>
             )}
 
-            {/* Re-finalize button */}
-            {(session.status === 'completed' || session.status === 'failed' || session.status === 'awaiting_enhancement') && (
-              <button
-                onClick={handleRefinalize}
-                disabled={actionLoading}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
-                title="Re-run finalization with existing code versions"
-              >
-                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                Re-finalize
-              </button>
-            )}
-
+            {/* === Group B: workflow lifecycle (state-driven primary actions) === */}
             {session.status === 'created' && (
               <button
                 onClick={handleStart}
                 disabled={actionLoading}
                 className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                data-tour="start-btn"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                 Start
               </button>
             )}
 
-            {session.status === 'running' && (
+            {(session.status === 'running' || session.status === 'enhancing') && (
               <button
                 onClick={handlePause}
                 disabled={actionLoading}
@@ -3433,7 +4861,7 @@ export default function SessionDetailPage() {
               </button>
             )}
 
-            {(session.status === 'running' || session.status === 'paused') && (
+            {(session.status === 'running' || session.status === 'paused' || session.status === 'enhancing') && (
               <button
                 onClick={handleCancel}
                 disabled={actionLoading}
@@ -3444,12 +4872,47 @@ export default function SessionDetailPage() {
               </button>
             )}
 
-            {/* Enhancement workflow buttons — Enhance + context-specific actions */}
+            {session.status === 'awaiting_visual_review' && (
+              <>
+                <button
+                  onClick={() => {
+                    switchToPanel('visualReview')
+                    pushPanel('visualReview')
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors"
+                  title="Open the visual review panel"
+                >
+                  <span aria-hidden="true">🎨</span>
+                  Review candidates
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      await skipVisualReview(sessionId!)
+                      notify.success('Visual review skipped — AI will decide')
+                      setShowVisualReview(false)
+                      loadSession()
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : 'Failed to skip review'
+                      notify.error(msg)
+                    }
+                  }}
+                  disabled={actionLoading}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 text-white rounded-lg transition-colors"
+                  title="Let the AI decide and continue"
+                >
+                  <SkipForward className="w-4 h-4" />
+                  Skip review
+                </button>
+              </>
+            )}
+
             {finalResult && !['running', 'enhancing', 'created', 'paused', 'awaiting_enhancement_review'].includes(session.status) && (
               <button
                 onClick={handleRunEnhancement}
                 disabled={enhancementLoading}
                 className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                data-tour="enhance-btn"
               >
                 {enhancementLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
                 Enhance
@@ -3488,53 +4951,258 @@ export default function SessionDetailPage() {
               </button>
             )}
 
+            {/* Separator between lifecycle and recovery — only show if any
+                recovery-group button will be visible to avoid orphaned bars. */}
+            {(session.status === 'failed'
+              || session.status === 'completed'
+              || session.status === 'cancelled'
+              || session.status === 'awaiting_enhancement'
+              || session.status === 'awaiting_enhancement_review'
+              || session.status === 'awaiting_visual_review'
+              || session.status === 'paused') && (
+              <div className="w-px h-7 bg-gray-700 mx-1 hidden md:block" aria-hidden="true" />
+            )}
+
+            {/* === Group C: recovery / destructive actions (hidden < md, in ⋯ menu) === */}
+            {session.status === 'failed' && (
+              <button
+                onClick={handleRetryFromFailed}
+                disabled={actionLoading}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                title="Retry from the failed step (resets failed agents and resumes)"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Retry from failed step
+              </button>
+            )}
+
+            {(session.status === 'completed' || session.status === 'failed' || session.status === 'awaiting_enhancement') && (
+              <button
+                onClick={handleRefinalize}
+                disabled={actionLoading}
+                className="hidden md:flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                title="Re-run finalization with existing code versions"
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                Re-finalize
+              </button>
+            )}
+
+            {(session.status === 'paused'
+              || session.status === 'awaiting_enhancement'
+              || session.status === 'awaiting_enhancement_review'
+              || session.status === 'awaiting_visual_review'
+              || session.status === 'failed') && (
+              <button
+                onClick={handleRestart}
+                disabled={actionLoading}
+                className="hidden md:flex items-center gap-2 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                title="Discard all current results and re-run the workflow from iteration 0"
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                <span className="text-sm">Restart from scratch</span>
+              </button>
+            )}
+
+            {(session.status === 'failed' || session.status === 'completed' || session.status === 'cancelled') && (
+              <button
+                onClick={handleReset}
+                disabled={actionLoading}
+                className="hidden md:flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                Reset
+              </button>
+            )}
+
+            {/* Separator before communication group */}
+            <div className="w-px h-7 bg-gray-700 mx-1" aria-hidden="true" />
+
+            {/* === Group D: communication === */}
             <button
-              onClick={() => setShowIntervention(!showIntervention)}
+              onClick={() => {
+                const next = !showIntervention
+                setShowIntervention(next)
+                if (next) pushPanel('intervention')
+              }}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                showIntervention 
-                  ? 'bg-indigo-600 text-white' 
+                showIntervention
+                  ? 'bg-indigo-600 text-white'
                   : 'bg-gray-700 hover:bg-gray-600 text-white'
               }`}
+              title="Send a free-text message into the running workflow"
             >
               <MessageSquare className="w-4 h-4" />
               Intervene
             </button>
 
-            {finalResult && (
-              <>
-                <button
-                  onClick={handleRunCode}
-                  disabled={executing}
-                  className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700"
+            {/* Separator before utility cluster */}
+            <div className="w-px h-7 bg-gray-700 mx-1" aria-hidden="true" />
+
+            {/* === Group E: utility (icons rightmost) === */}
+            <button
+              onClick={handleOpenSaveTemplate}
+              disabled={savingTemplate}
+              className="hidden md:flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-gray-200 hover:text-white rounded-lg transition-colors"
+              title="Save this session's configuration as a reusable template"
+            >
+              <BookmarkPlus className="w-4 h-4" />
+              <span className="text-sm">Save as Template</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const next = !lockViewport
+                setLockViewport(next)
+                notify.info(next ? 'Viewport locked — auto-pan disabled' : 'Viewport unlocked — auto-pan enabled')
+              }}
+              className={`flex items-center justify-center w-9 h-9 rounded-lg transition-colors ${
+                lockViewport
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white'
+              }`}
+              title={lockViewport ? 'Viewport locked (auto-pan disabled) — click to unlock' : 'Lock viewport (disable auto-pan on phase changes)'}
+              aria-pressed={lockViewport}
+            >
+              {lockViewport ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+            </button>
+
+            <button
+              onClick={() => setShortcutsHelpOpen(true)}
+              className="flex items-center justify-center w-9 h-9 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors"
+              title="Keyboard shortcuts (press ?)"
+            >
+              <HelpCircle className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={() => setShowSettings(true)}
+              className="hidden md:flex items-center justify-center w-9 h-9 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors"
+              title="Session Settings"
+              data-tour="settings-btn"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
+            {/* Overflow ⋯ menu (md:hidden) — surfaces md-hidden secondary
+                actions (Settings, Save Template, Reset, Re-finalize, Restart). */}
+            <div ref={headerOverflowRef} className="md:hidden relative">
+              <button
+                type="button"
+                onClick={() => setHeaderOverflowOpen(v => !v)}
+                className="flex items-center justify-center w-9 h-9 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors"
+                aria-haspopup="menu"
+                aria-expanded={headerOverflowOpen}
+                title="More actions"
+              >
+                <MoreHorizontal className="w-4 h-4" />
+              </button>
+              {headerOverflowOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-1 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-30 py-1"
                 >
-                  {executing ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Play className="w-4 h-4" />
+                  <button
+                    role="menuitem"
+                    onClick={() => { setHeaderOverflowOpen(false); setShowSettings(true) }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+                  >
+                    <Settings className="w-4 h-4" />
+                    Session Settings
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => { setHeaderOverflowOpen(false); handleOpenSaveTemplate() }}
+                    disabled={savingTemplate}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors disabled:opacity-50"
+                  >
+                    <BookmarkPlus className="w-4 h-4" />
+                    Save as Template
+                  </button>
+                  {(session.status === 'failed' || session.status === 'completed' || session.status === 'cancelled') && (
+                    <button
+                      role="menuitem"
+                      onClick={() => { setHeaderOverflowOpen(false); handleReset() }}
+                      disabled={actionLoading}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      Reset
+                    </button>
                   )}
-                  Run Code
-                </button>
-                <button
-                  onClick={() => setShowCode(!showCode)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                    showCode 
-                      ? 'bg-indigo-600 text-white' 
-                      : 'bg-gray-700 hover:bg-gray-600 text-white'
-                  }`}
-                >
-                  <Code className="w-4 h-4" />
-                  View Result
-                </button>
-              </>
-            )}
+                  {(session.status === 'completed' || session.status === 'failed' || session.status === 'awaiting_enhancement') && (
+                    <button
+                      role="menuitem"
+                      onClick={() => { setHeaderOverflowOpen(false); handleRefinalize() }}
+                      disabled={actionLoading}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-indigo-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Re-finalize
+                    </button>
+                  )}
+                  {(session.status === 'paused'
+                    || session.status === 'awaiting_enhancement'
+                    || session.status === 'awaiting_enhancement_review'
+                    || session.status === 'awaiting_visual_review'
+                    || session.status === 'failed') && (
+                    <button
+                      role="menuitem"
+                      onClick={() => { setHeaderOverflowOpen(false); handleRestart() }}
+                      disabled={actionLoading}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-300 hover:bg-gray-700 transition-colors disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      Restart from scratch
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
+      {/* Progress bar */}
+      {session?.status === 'running' && workflowState.phase && (
+        <div className="flex items-center gap-3 px-4 py-1.5 bg-cf-panel/50 border-b border-cf-border flex-shrink-0">
+          <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(100, ((Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1) / (session.max_iterations || 5)) * 100)}%` }}
+            />
+          </div>
+          <span className="text-xs text-cf-text-muted whitespace-nowrap">
+            Iter {Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1}/{session.max_iterations || 5} &bull; {workflowState.phase}
+          </span>
+        </div>
+      )}
+
       {/* Main content */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* React Flow Graph */}
-        <div ref={reactFlowContainerRef} className="flex-1 relative h-full w-full">
+        <div
+          ref={reactFlowContainerRef}
+          className="flex-1 relative h-full w-full overflow-hidden min-w-0"
+          /* VR-38 — `overflow-hidden` clips GroupFramesLayer's dashed frames
+             and their drag-handle strips so they cannot bleed into the
+             sibling side-panel (Visual Review / DetailPanel / etc.) and
+             intercept clicks on Live preview buttons. `min-w-0` lets the
+             flex-1 shrink correctly when a side panel is open instead of
+             forcing horizontal overflow on the parent row. */
+          data-tour="agent-graph" /* tour-anchor: graph canvas (Tour 2, step 5) */
+        >
+          {/* Улучшатели#3 P0·M — WS reconnect UI: dimmed overlay while reconnecting.
+              Pointer-events disabled so users can still pan/zoom the (stale) graph. */}
+          {wsState.status === 'reconnecting' && (
+            <div
+              className="absolute inset-0 bg-gray-900/30 pointer-events-none z-10 transition-opacity duration-200"
+              aria-hidden="true"
+            />
+          )}
+          {/* Улучшатели#3 P0·M — WS reconnect UI: status pill (top-right).
+              z-20 sits above the graph but below modals (which use z-50+). */}
+          <WSStatusPill state={wsState} recentlyRecovered={wsRecentlyRecovered} />
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -3560,32 +5228,53 @@ export default function SessionDetailPage() {
               className="bg-gray-800 rounded-lg"
               nodeColor={(node: any) => {
                 const status = node.data?.status || 'idle'
+                // Улучшатели#3 P3·S — Mini-map status palette completed.
+                // Covers every value of the AgentNodeData['status'] enum so
+                // active/error states aren't silently mapped to grey.
                 const colors: Record<string, string> = {
-                  idle: '#4B5563',
-                  working: '#3B82F6',
-                  done: '#10B981',
-                  error: '#EF4444',
-                  waiting: '#F59E0B',
+                  idle: '#4B5563',       // grey — waiting to start
+                  waiting: '#F59E0B',    // amber — queued
+                  working: '#3B82F6',    // blue — active work
+                  executing: '#3B82F6',  // blue — active sandbox run
+                  fixing: '#F59E0B',     // amber — rework
+                  done: '#10B981',       // emerald — complete
+                  error: '#EF4444',      // red — failed
+                  timeout: '#DC2626',    // red variant — timed out
                 }
                 return colors[status] || '#4B5563'
               }}
               maskColor="rgba(0, 0, 0, 0.8)"
             />
 
-            {/* Metrics Panel */}
-            <Panel position="top-left">
+            {/* Metrics Panel — КАО#W4-FIX-02 v2 (Option A — reposition).
+                Option B (pointer-events) didn't fully work: the inner card
+                still extends ~32px down into the Spec node's hit area, and
+                because the card is pointer-events:auto, those pixels block
+                spec-node clicks. Move the panel to top-right where the Spec
+                node never sits. Keep pointer-events-none on the wrapper as
+                a safety net for any other top-corner overlap. */}
+            <Panel position="top-right" className="pointer-events-none">
               <MetricsPanel
-                iteration={workflowState.iteration || session.current_iteration}
+                iteration={Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1}
                 maxIterations={session.max_iterations}
                 totalTokens={workflowState.totalTokens}
                 totalCost={workflowState.totalCost}
                 status={session.status}
-                criticalIssues={workflowState.criticalIssues}
-                seriousIssues={workflowState.seriousIssues}
+                /* Улучшатели#3 wave 2 #9 — aggregate tester issuesFound so the
+                   panel block actually renders during testing phases. */
+                criticalIssues={displayCriticalIssues}
+                seriousIssues={displaySeriousIssues}
                 codersDone={workflowState.codersDone}
                 totalCoders={coders.length}
                 testersDone={workflowState.testersDone}
                 totalTesters={testers.length}
+                checkpoints={checkpoints.map(c => ({
+                  id: c.id,
+                  iteration: c.iteration,
+                  phase: c.phase,
+                  created_at: c.created_at,
+                  total_tokens: c.total_tokens,
+                }))}
               />
             </Panel>
 
@@ -3594,13 +5283,17 @@ export default function SessionDetailPage() {
               <LegendPanel compact />
             </Panel>
 
-            {/* Phase indicator */}
+            {/* Phase indicator — Улучшатели#3 wave 2 #8: humanizePhase renders
+                "Coding (iteration 2)" / "Summarizing audits" instead of raw
+                lowercase enum + CSS capitalize. */}
             {((session.status === 'running' && workflowState.phase) || session.status === 'enhancing') && (
               <Panel position="top-center">
                 <div className={`${session.status === 'enhancing' ? 'bg-purple-500/20 border-purple-500/50' : 'bg-blue-500/20 border-blue-500/50'} border rounded-full px-4 py-2 flex items-center gap-2`}>
                   <div className={`w-2 h-2 rounded-full ${session.status === 'enhancing' ? 'bg-purple-500' : 'bg-blue-500'} animate-pulse`} />
-                  <span className={`text-sm font-medium ${session.status === 'enhancing' ? 'text-purple-400' : 'text-blue-400'} capitalize`}>
-                    {session.status === 'enhancing' ? 'Enhancement' : workflowState.phase} Phase
+                  <span className={`text-sm font-medium ${session.status === 'enhancing' ? 'text-purple-400' : 'text-blue-400'}`}>
+                    {session.status === 'enhancing'
+                      ? 'Enhancement phase'
+                      : `${humanizePhase(workflowState.phase, Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0))} phase`}
                   </span>
                 </div>
               </Panel>
@@ -3609,6 +5302,8 @@ export default function SessionDetailPage() {
             {/* Status hints removed — info is already shown in the header badge */}
             {/* Bridge to report viewport changes to the parent */}
             <ViewportBridge onChange={setFlowViewport} />
+            {/* Bridge to expose ReactFlow instance for auto-scroll */}
+            <ReactFlowBridge instanceRef={reactFlowInstanceRef} />
           </ReactFlow>
 
           {/* Group frames overlay — rendered OUTSIDE ReactFlow so buttons aren't blocked by grab handler */}
@@ -3620,6 +5315,7 @@ export default function SessionDetailPage() {
             onRemoveCoder={() => handleRemoveAgent('coder')}
             onRemoveTester={() => handleRemoveAgent('tester')}
             canModify={session.status === 'created'}
+            onGroupDragStart={onGroupDragStart}
           />
 
           {/* Floating agent config popup */}
@@ -3635,7 +5331,7 @@ export default function SessionDetailPage() {
                 x={agentConfigPopup.x}
                 y={agentConfigPopup.y}
                 existingConfig={matchingConfig
-                  ? { llm_provider: matchingConfig.llm_provider, llm_model: matchingConfig.llm_model, thinking_effort: matchingConfig.thinking_effort, custom_prompt: matchingConfig.custom_prompt, enabled: matchingConfig.enabled }
+                  ? { llm_provider: matchingConfig.llm_provider, llm_model: matchingConfig.llm_model, thinking_effort: matchingConfig.thinking_effort, custom_prompt: matchingConfig.custom_prompt, enabled: matchingConfig.enabled, temperature: (matchingConfig as any).temperature, max_tokens: matchingConfig.max_tokens }
                   : { llm_provider: '', llm_model: '' }
                 }
                 onClose={() => setAgentConfigPopup(null)}
@@ -3652,15 +5348,19 @@ export default function SessionDetailPage() {
                         llm_model: config.model,
                         thinking_effort: effortValue,
                         custom_prompt: config.instruction || null,
+                        temperature: config.temperature,
+                        max_tokens: config.maxTokens,
                         ...(isEnhancer ? { enabled: config.enabled } : {}),
                       })
+                      notify.success('Agent settings saved')
                     } catch (e) {
                       console.error('Failed to update agent config:', e)
+                      notify.error('Failed to save agent settings')
                       return
                     }
                     const updatedConfigs = session.agent_configs.map(c =>
                       c.id === matchingConfig.id
-                        ? { ...c, llm_provider: config.provider, llm_model: config.model, thinking_effort: effortValue, custom_prompt: config.instruction || undefined, enabled: isEnhancer ? config.enabled : c.enabled }
+                        ? { ...c, llm_provider: config.provider, llm_model: config.model, thinking_effort: effortValue, custom_prompt: config.instruction || undefined, temperature: config.temperature, max_tokens: config.maxTokens, enabled: isEnhancer ? config.enabled : c.enabled }
                         : c
                     )
                     setSession({ ...session, agent_configs: updatedConfigs })
@@ -3681,16 +5381,19 @@ export default function SessionDetailPage() {
                         llm_provider: config.provider,
                         llm_model: config.model,
                         thinking_effort: effortValue,
+                        max_tokens: config.maxTokens,
                       })
-                      // Save custom_prompt + enabled via update
-                      if (config.instruction || (isEnhancer && !config.enabled)) {
-                        await updateAgentConfig(session.id, newConfig.id, {
-                          custom_prompt: config.instruction || null,
-                          ...(isEnhancer ? { enabled: config.enabled } : {}),
-                        })
-                        newConfig.custom_prompt = config.instruction || null
-                        if (isEnhancer) newConfig.enabled = config.enabled
-                      }
+                      // Save custom_prompt + temperature + enabled via update
+                      await updateAgentConfig(session.id, newConfig.id, {
+                        custom_prompt: config.instruction || null,
+                        temperature: config.temperature,
+                        ...(isEnhancer ? { enabled: config.enabled } : {}),
+                      })
+                      newConfig.custom_prompt = config.instruction || null
+                      ;(newConfig as any).temperature = config.temperature
+                      newConfig.max_tokens = config.maxTokens
+                      if (isEnhancer) newConfig.enabled = config.enabled
+                      notify.success('Agent settings saved')
                       setSession({ ...session, agent_configs: [...session.agent_configs, newConfig] })
                       // Immediately update enhancer node disabled state on the graph
                       if (isEnhancer) {
@@ -3702,6 +5405,7 @@ export default function SessionDetailPage() {
                       }
                     } catch (e) {
                       console.error('Failed to create agent config:', e)
+                      notify.error('Failed to save agent settings')
                     }
                   }
                 }}
@@ -3709,20 +5413,31 @@ export default function SessionDetailPage() {
             )
           })()}
 
-          {/* Click hint */}
-          {!selectedNode && session.status !== 'running' && session.status !== 'enhancing' && (
-            <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 pointer-events-none">
-              <div className="bg-gray-800/80 backdrop-blur-sm border border-gray-700 rounded-lg px-4 py-2 flex items-center gap-2">
-                <Eye className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-400">Click on an agent to view details</span>
+          {/* Улучшатели#3 P2·S — Click hint visibility flip.
+              The hint is most useful for new users while agents are actually
+              running/enhancing (so they know they can drill in). Hide it on
+              completion (no agent will ever start now) and on idle states
+              where no agent is currently active. */}
+          {!selectedNode &&
+            (session.status === 'running' || session.status === 'enhancing') && (
+              <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 pointer-events-none">
+                <div className="bg-gray-800/80 backdrop-blur-sm border border-gray-700 rounded-lg px-4 py-2 flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-400">Click on an agent to view details</span>
+                </div>
               </div>
-            </div>
-          )}
+            )}
         </div>
 
         {/* Side panels */}
+        {/* Улучшатели#3 wave 2 #6 — Intervention now shows a scrollable history
+            above the textarea with each entry's delivery status. We optimistically
+            flip to "Delivered" once the POST resolves. TODO(backend): emit an
+            `intervention_acknowledged` WS event so we can flip to "Consumed by
+            agent_X at iter N". */}
         {showIntervention && (
           <div className="w-96 bg-gray-800 border-l border-gray-700 flex flex-col">
+            {renderPanelBreadcrumb('intervention')}
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white">Intervention</h3>
               <button
@@ -3732,36 +5447,96 @@ export default function SessionDetailPage() {
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
-            <div className="flex-1 p-4">
-              <p className="text-sm text-gray-400 mb-4">
-                Add comments or instructions for the agents. These will be included in the next iteration.
-              </p>
-              <textarea
-                value={interventionText}
-                onChange={(e) => setInterventionText(e.target.value)}
-                placeholder="Enter your intervention message..."
-                className="w-full h-40 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-              />
-              <button
-                className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50"
-                disabled={!interventionText.trim()}
-                onClick={async () => {
-                  if (!interventionText.trim()) return
-                  try {
-                    await createIntervention(sessionId!, {
-                      intervention_type: 'comment',
-                      content: interventionText.trim(),
-                    })
-                    notify.success('Intervention saved — will be included in the next iteration')
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* History list */}
+              <div className="px-4 pt-4 pb-2 flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
+                <History className="w-3.5 h-3.5" />
+                History ({interventionHistory.length})
+              </div>
+              <div className="px-4 pb-3 overflow-y-auto max-h-[40vh] min-h-[60px]">
+                {interventionHistory.length === 0 ? (
+                  <p className="text-xs text-gray-500 italic">No interventions sent yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {interventionHistory.map(entry => {
+                      const statusLabel =
+                        entry.status === 'pending'   ? 'Pending'
+                        : entry.status === 'delivered' ? 'Delivered'
+                        : entry.status === 'consumed'  ? (entry.consumedBy ? `Consumed by ${entry.consumedBy}` : 'Consumed')
+                        : 'Failed'
+                      const statusClass =
+                        entry.status === 'pending'   ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                        : entry.status === 'delivered' ? 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                        : entry.status === 'consumed'  ? 'bg-green-500/15 text-green-300 border-green-500/40'
+                        : 'bg-red-500/15 text-red-300 border-red-500/40'
+                      const when = (() => {
+                        try { return new Date(entry.sentAt).toLocaleTimeString() } catch { return '' }
+                      })()
+                      return (
+                        <li key={entry.id} className="bg-gray-900/60 rounded-lg border border-gray-700/60 p-2">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                            <span className="text-[10px] text-gray-500 font-mono">{when}</span>
+                          </div>
+                          <p className="text-xs text-gray-200 whitespace-pre-wrap break-words">{entry.content}</p>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+              <div className="px-4 pb-4 pt-1 border-t border-gray-700/50">
+                <p className="text-xs text-gray-400 mb-2">
+                  Add comments or instructions for the agents. These will be included in the next iteration.
+                </p>
+                <textarea
+                  value={interventionText}
+                  onChange={(e) => setInterventionText(e.target.value)}
+                  placeholder="Enter your intervention message..."
+                  className="w-full h-28 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none text-sm"
+                />
+                <button
+                  className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                  disabled={!interventionText.trim()}
+                  onClick={async () => {
+                    const content = interventionText.trim()
+                    if (!content) return
+                    // Local-only id — backend doesn't return one. crypto.randomUUID
+                    // is available in all modern browsers/HTTPS contexts.
+                    const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                      ? crypto.randomUUID()
+                      : `iv-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                    const entry: InterventionHistoryEntry = {
+                      id,
+                      content,
+                      sentAt: Date.now(),
+                      status: 'pending',
+                    }
+                    setInterventionHistory(prev => [entry, ...prev])
                     setInterventionText('')
-                  } catch (err) {
-                    notify.error('Failed to save intervention')
-                  }
-                }}
-              >
-                <Send className="w-4 h-4" />
-                Send Intervention
-              </button>
+                    try {
+                      await createIntervention(sessionId!, {
+                        intervention_type: 'comment',
+                        content,
+                      })
+                      setInterventionHistory(prev =>
+                        prev.map(e => (e.id === id ? { ...e, status: 'delivered' as InterventionStatus } : e)),
+                      )
+                      notify.success('Intervention sent')
+                    } catch (err) {
+                      setInterventionHistory(prev =>
+                        prev.map(e => (e.id === id ? { ...e, status: 'failed' as InterventionStatus } : e)),
+                      )
+                      notify.error('Failed to save intervention')
+                    }
+                  }}
+                >
+                  <Send className="w-4 h-4" />
+                  Send Intervention
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -3769,6 +5544,7 @@ export default function SessionDetailPage() {
         {/* Enhancement Review Panel */}
         {showEnhancementReview && (
           <div className="w-[500px] bg-gray-800 border-l border-gray-700 flex flex-col">
+            {renderPanelBreadcrumb('enhancement')}
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -3863,6 +5639,7 @@ export default function SessionDetailPage() {
                                       updated[idx] = { ...updated[idx], priority: e.target.value }
                                       setCuratedItems(updated)
                                     }}
+                                    aria-label="Priority"
                                     className="w-full px-2 py-1 bg-gray-600 border border-gray-500 rounded text-sm text-white"
                                   >
                                     <option value="critical">Critical</option>
@@ -3892,6 +5669,103 @@ export default function SessionDetailPage() {
                                     className="w-full px-2 py-1 bg-gray-600 border border-gray-500 rounded text-sm text-white resize-none"
                                     placeholder="Description"
                                   />
+                                  {/* VR-39 — per-enhancement attachments (files + git repo).
+                                      Surfaced only for user-authored enhancements (`category === 'user'`)
+                                      so LLM-generated suggestions stay text-only. Reuses the
+                                      uploadFiles / fetchRepo APIs from the Specification dialog. */}
+                                  {item.category === 'user' && (
+                                    <div className="space-y-1.5 pt-1 border-t border-gray-600/60">
+                                      <div className="text-[10px] uppercase tracking-wider text-gray-400 flex items-center gap-1">
+                                        <FilePlus className="w-3 h-3" />
+                                        Attachments (optional)
+                                      </div>
+                                      {(item.attachments || []).length > 0 && (
+                                        <div className="space-y-1">
+                                          {(item.attachments || []).map((att, attIdx) => (
+                                            <div
+                                              key={attIdx}
+                                              className="flex items-center gap-2 px-2 py-1 bg-gray-700/50 border border-gray-600/40 rounded text-xs"
+                                            >
+                                              {att.type === 'repo_url' || att.type === 'repo' ? (
+                                                <GitBranch className="w-3 h-3 text-green-400 shrink-0" />
+                                              ) : (
+                                                <FileText className="w-3 h-3 text-blue-400 shrink-0" />
+                                              )}
+                                              <span className="truncate text-gray-200 flex-1" title={
+                                                att.type === 'repo_url' || att.type === 'repo'
+                                                  ? (att.url || att.repo_name || '')
+                                                  : (att.filename || '')
+                                              }>
+                                                {att.type === 'repo_url' || att.type === 'repo'
+                                                  ? (att.repo_name || att.label || att.url || 'git repo')
+                                                  : (att.filename || 'file')}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleEnhRemoveAttachment(idx, attIdx)}
+                                                className="p-0.5 hover:bg-gray-600 rounded text-gray-400 hover:text-red-300"
+                                                title="Remove attachment"
+                                              >
+                                                <X className="w-3 h-3" />
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      <div className="flex items-center gap-1.5">
+                                        <label
+                                          className={`flex items-center gap-1 px-2 py-1 text-xs rounded cursor-pointer transition-colors ${
+                                            busyAttachIdx === idx
+                                              ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                                              : 'bg-gray-700 hover:bg-gray-600 text-gray-200'
+                                          }`}
+                                          title="Attach files (LLM will read their content as context)"
+                                        >
+                                          {busyAttachIdx === idx ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                          ) : (
+                                            <FilePlus className="w-3 h-3" />
+                                          )}
+                                          Add file(s)
+                                          <input
+                                            type="file"
+                                            multiple
+                                            className="hidden"
+                                            disabled={busyAttachIdx === idx}
+                                            onChange={(e) => {
+                                              handleEnhUploadFiles(idx, e.target.files)
+                                              e.target.value = ''  // allow re-uploading the same file
+                                            }}
+                                          />
+                                        </label>
+                                      </div>
+                                      <div className="flex items-center gap-1.5">
+                                        <input
+                                          type="url"
+                                          placeholder="https://github.com/user/repo"
+                                          value={repoUrlByIdx[idx] || ''}
+                                          onChange={(e) => setRepoUrlByIdx({ ...repoUrlByIdx, [idx]: e.target.value })}
+                                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleEnhFetchRepo(idx) } }}
+                                          disabled={busyAttachIdx === idx}
+                                          className="flex-1 min-w-0 px-2 py-1 bg-gray-600 border border-gray-500 rounded text-xs text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-green-500 disabled:opacity-50"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => handleEnhFetchRepo(idx)}
+                                          disabled={busyAttachIdx === idx || !(repoUrlByIdx[idx] || '').trim()}
+                                          className="flex items-center gap-1 px-2 py-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:opacity-50 text-white text-xs rounded transition-colors"
+                                          title="Fetch repo metadata + key files"
+                                        >
+                                          {busyAttachIdx === idx ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                          ) : (
+                                            <GitBranch className="w-3 h-3" />
+                                          )}
+                                          Add repo
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
                                   <button
                                     onClick={() => {
                                       const updated = [...curatedItems]
@@ -3907,6 +5781,20 @@ export default function SessionDetailPage() {
                                 <>
                                   <h4 className="text-sm font-medium text-white">{item.title}</h4>
                                   <p className="text-xs text-gray-400 mt-1 line-clamp-3">{item.description}</p>
+                                  {/* VR-39 — non-editing badge: show attachment count if any */}
+                                  {item.attachments && item.attachments.length > 0 && (
+                                    <div className="flex items-center gap-1 mt-1.5 text-[10px] text-gray-400">
+                                      <FilePlus className="w-3 h-3 text-green-400" />
+                                      {item.attachments.length} attachment{item.attachments.length === 1 ? '' : 's'}
+                                      <span className="text-gray-500">
+                                        ({item.attachments.map(a =>
+                                          a.type === 'repo_url' || a.type === 'repo'
+                                            ? (a.repo_name || 'repo')
+                                            : (a.filename || 'file')
+                                        ).slice(0, 3).join(', ')}{item.attachments.length > 3 ? '…' : ''})
+                                      </span>
+                                    </div>
+                                  )}
                                 </>
                               )}
                             </div>
@@ -3991,6 +5879,7 @@ export default function SessionDetailPage() {
 
         {showCode && finalResult && (
           <div className="w-[600px] bg-gray-800 border-l border-gray-700 flex flex-col">
+            {renderPanelBreadcrumb('code')}
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -4011,7 +5900,18 @@ export default function SessionDetailPage() {
                   )}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* VR-35 FIX: surface Run Code inside the Final Result panel
+                    so the action is reachable even if the toolbar above is
+                    hidden behind another open side-panel. */}
+                <button
+                  onClick={handleRunCode}
+                  disabled={executing}
+                  className="flex items-center gap-2 px-3 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-sm text-white rounded transition-colors"
+                >
+                  {executing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  Run Code
+                </button>
                 <button
                   onClick={async () => {
                     try {
@@ -4039,6 +5939,16 @@ export default function SessionDetailPage() {
                   >
                     <GitBranch className="w-4 h-4" />
                     Create PR
+                  </button>
+                )}
+                {(session.attachments || []).some((a: { type?: string }) => a?.type === 'repo') && (
+                  <button
+                    onClick={() => setShowGitPanel(true)}
+                    className="flex items-center gap-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-sm text-white rounded transition-colors"
+                    title="View commits, branches, and diffs"
+                  >
+                    <GitBranch className="w-4 h-4" />
+                    Show Git Info
                   </button>
                 )}
                 <button
@@ -4176,10 +6086,42 @@ export default function SessionDetailPage() {
                 <h4 className="text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
                   <Code className="w-4 h-4" />
                   {finalResult.file_structure && Object.keys(finalResult.file_structure).length > 0 ? 'Combined Code' : 'Generated Code'}
+                  {/* Улучшатели#3 P2·S — Final Result code: wrap + fullscreen toggles. */}
+                  <span className="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setFinalCodeWrap(w => !w)}
+                      className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded transition-colors ${
+                        finalCodeWrap
+                          ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-500/40'
+                          : 'bg-gray-700/60 text-gray-300 hover:bg-gray-700 border border-gray-600/50'
+                      }`}
+                      title={finalCodeWrap ? 'Disable line wrapping (long lines scroll horizontally)' : 'Enable line wrapping for long lines'}
+                      aria-pressed={finalCodeWrap}
+                    >
+                      {finalCodeWrap ? 'Wrap' : 'No wrap'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFinalCodeFullscreen(true)}
+                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-700/60 text-gray-300 hover:bg-gray-700 border border-gray-600/50 transition-colors flex items-center gap-1"
+                      title="Expand the code viewer to fullscreen"
+                    >
+                      <Maximize2 className="w-3 h-3" />
+                      Fullscreen
+                    </button>
+                  </span>
                 </h4>
-                <pre className="bg-gray-900 p-4 rounded-lg overflow-x-auto text-sm text-gray-300 font-mono max-h-96">
-                  {finalResult.final_code}
-                </pre>
+                {/* Улучшатели#3 wave 2 #5 + P2·S — syntax-highlighted via CodeBlock.
+                    max-h bumped to 60vh so longer files don't clip at ~24 lines,
+                    and showLineNumbers is toggled by the Wrap button (when wrap
+                    is on CodeBlock switches to whitespace-pre-wrap mode). */}
+                <CodeBlock
+                  code={finalResult.final_code || ''}
+                  language={session.language}
+                  maxHeightClass="max-h-[60vh]"
+                  showLineNumbers={!finalCodeWrap}
+                />
               </div>
 
               {finalResult.readme_content && (
@@ -4216,6 +6158,7 @@ export default function SessionDetailPage() {
         {/* Execution Result Panel */}
         {showExecution && (
           <div className="w-[500px] bg-gray-800 border-l border-gray-700 flex flex-col">
+            {renderPanelBreadcrumb('execution')}
             <div className="p-4 border-b border-gray-700 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Terminal className="w-5 h-5 text-blue-400" />
@@ -4296,6 +6239,7 @@ export default function SessionDetailPage() {
         {/* Browser Preview panel (Run in Browser) */}
         {showBrowserPreview && browserPreviewHtml && (
           <div className="w-[720px] h-full border-l border-gray-700 bg-gray-800 flex flex-col animate-slideIn">
+            {renderPanelBreadcrumb('browser')}
             {/* Header */}
             <div className="flex items-center justify-between p-3 border-b border-gray-700 bg-gray-800/95">
               <div className="flex items-center gap-2">
@@ -4352,28 +6296,103 @@ export default function SessionDetailPage() {
           </div>
         )}
 
-        {/* Detail panel for selected node */}
-        {selectedNode && selectedNodeData && !showCode && !showIntervention && !showExecution && !showBrowserPreview && !showEnhancementReview && (
-          <DetailPanel
-            nodeId={selectedNode}
-            nodeType={selectedNodeData.agentType}
-            agentIndex={selectedNodeData.agentIndex}
+        {/* Git panel — overlay showing commits, diffs, and PR status */}
+        {showGitPanel && (
+          <GitPanel
             sessionId={sessionId!}
-            title={selectedNodeData.label}
-            llmModel={selectedNodeData.llmModel}
-            language={session.language}
-            currentIteration={session.current_iteration}
-            maxIterations={session.max_iterations}
-            sessionStatus={session.status}
-            specification={session.specification}
-            onClose={() => {
-              setSelectedNode(null)
-              setSelectedNodeData(null)
-            }}
-            onRunCodeVersion={handleRunCodeVersion}
+            hasRepoAttached={(session.attachments || []).some((a: { type?: string }) => a?.type === 'repo')}
+            prUrl={prResult?.pr_url}
+            onClose={() => setShowGitPanel(false)}
           />
         )}
+
+        {/* КАО#VR-Wave1 Frontend — Visual Review side-panel.
+            Rendered above the DetailPanel guard so it takes precedence when open. */}
+        {showVisualReview && (
+          <div className="flex flex-col">
+            {renderPanelBreadcrumb('visualReview')}
+            <VisualReviewPanel
+              sessionId={sessionId!}
+              onClose={() => setShowVisualReview(false)}
+              onSubmitted={() => {
+                // Refresh session so status pill flips back to running/completed.
+                loadSession()
+              }}
+              onSkipped={() => {
+                loadSession()
+              }}
+            />
+          </div>
+        )}
+
+        {/* Detail panel for selected node */}
+        {selectedNode && selectedNodeData && !showCode && !showIntervention && !showExecution && !showBrowserPreview && !showEnhancementReview && !showVisualReview && (
+          // Улучшатели#3 P2·M — wrap DetailPanel so the side-panel breadcrumb
+          // sits above it. The DetailPanel itself is a self-contained component
+          // we don't own, so we attach the breadcrumb at the wrapper level.
+          <div className="flex flex-col">
+            {renderPanelBreadcrumb('detail')}
+            <DetailPanel
+              nodeId={selectedNode}
+              nodeType={selectedNodeData.agentType}
+              agentIndex={selectedNodeData.agentIndex}
+              sessionId={sessionId!}
+              title={selectedNodeData.label}
+              llmModel={selectedNodeData.llmModel}
+              language={session.language}
+              currentIteration={session.current_iteration}
+              maxIterations={session.max_iterations}
+              sessionStatus={session.status}
+              specification={session.specification}
+              onClose={() => {
+                setSelectedNode(null)
+                setSelectedNodeData(null)
+              }}
+              onRunCodeVersion={handleRunCodeVersion}
+              /* Улучшатели#3 wave 2 #2 — current node status + retry handler.
+                 Read live status from the nodes array (selectedNodeData may be stale). */
+              nodeStatus={(nodes.find((n: any) => n.id === selectedNode)?.data as any)?.status as string | undefined}
+              onRetryAgent={handleRetryAgent}
+              /* VR-35 — let the Output node panel run the finalized code. */
+              onRunCode={handleRunCode}
+              isRunningCode={executing}
+            />
+          </div>
+        )}
       </div>
+
+      {/* Улучшатели#3 P2·S — Final Result fullscreen modal.
+          Re-uses the Modal primitive (size="2xl") and the CodeBlock primitive
+          so the fullscreen viewer inherits highlighting + copy. */}
+      <Modal
+        open={finalCodeFullscreen}
+        onClose={() => setFinalCodeFullscreen(false)}
+        title="Generated Code"
+        size="2xl"
+        icon={<Code className="w-5 h-5 text-indigo-400" />}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            type="button"
+            onClick={() => setFinalCodeWrap(w => !w)}
+            className={`text-[11px] uppercase tracking-wider px-2 py-1 rounded transition-colors ${
+              finalCodeWrap
+                ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-500/40'
+                : 'bg-gray-700/60 text-gray-300 hover:bg-gray-700 border border-gray-600/50'
+            }`}
+            title={finalCodeWrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+            aria-pressed={finalCodeWrap}
+          >
+            {finalCodeWrap ? 'Wrap' : 'No wrap'}
+          </button>
+        </div>
+        <CodeBlock
+          code={finalResult?.final_code || ''}
+          language={session.language}
+          maxHeightClass="max-h-[75vh]"
+          showLineNumbers={!finalCodeWrap}
+        />
+      </Modal>
 
       {/* Specifications Dialog — opened when clicking the Specification node in the graph */}
       <SpecificationsDialog
@@ -4383,6 +6402,9 @@ export default function SessionDetailPage() {
         specification={session.specification || ''}
         initialCode={session.initial_code || ''}
         attachments={session.attachments || []}
+        language={session.language}
+        agentConfigs={session.agent_configs}
+        maxIterations={session.max_iterations}
         onSaved={(data) => {
           // Update local session state with saved specifications
           setSession(prev => prev ? {
@@ -4393,6 +6415,63 @@ export default function SessionDetailPage() {
           } : prev)
         }}
       />
+
+      {/* Save as Template dialog */}
+      {showSaveTemplate && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          onClick={() => !savingTemplate && setShowSaveTemplate(false)}
+        >
+          <div
+            className="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <BookmarkPlus className="w-5 h-5 text-indigo-400" />
+              <h3 className="text-lg font-semibold text-white">Save as Template</h3>
+            </div>
+            <p className="text-sm text-gray-400 mb-4">
+              Snapshot this session's agent configurations and settings as a reusable template.
+            </p>
+            <label className="block text-sm text-gray-300 mb-1">Name</label>
+            <input
+              type="text"
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              placeholder="Template name"
+              maxLength={255}
+              autoFocus
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 mb-3"
+            />
+            <label className="block text-sm text-gray-300 mb-1">Description (optional)</label>
+            <textarea
+              value={templateDescription}
+              onChange={(e) => setTemplateDescription(e.target.value)}
+              placeholder="What is this template for?"
+              rows={3}
+              maxLength={10000}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 mb-4 resize-none"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowSaveTemplate(false)}
+                disabled={savingTemplate}
+                className="px-4 py-2 text-gray-300 hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTemplate}
+                disabled={savingTemplate || !templateName.trim()}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white font-medium rounded-lg transition-colors flex items-center gap-2"
+              >
+                {savingTemplate && <Loader2 className="w-4 h-4 animate-spin" />}
+                Save Template
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reset Confirmation Dialog */}
       <ConfirmDialog
@@ -4420,6 +6499,19 @@ export default function SessionDetailPage() {
         loading={actionLoading}
       />
 
+      {/* КАО#VR-11 RestartFromScratch — destructive confirm before wiping all artifacts. */}
+      <ConfirmDialog
+        isOpen={showRestartConfirm}
+        onClose={() => setShowRestartConfirm(false)}
+        onConfirm={handleRestartConfirmed}
+        title="Restart from scratch?"
+        message="This will discard all current results (code versions, audits, screenshots, final code) and re-run the workflow from iteration 0 with the same specification. This cannot be undone."
+        confirmText="Restart"
+        cancelText="Cancel"
+        type="danger"
+        loading={actionLoading}
+      />
+
       {/* Session Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -4439,6 +6531,16 @@ export default function SessionDetailPage() {
                 const form = e.currentTarget
                 const fd = new FormData(form)
                 try {
+                  const agentT = Number(fd.get('agent_timeout'))
+                  let requestT = Number(fd.get('request_timeout'))
+                  if (requestT > agentT) requestT = agentT
+                  // Feature #1: persist `streaming` in session.settings so
+                  // backend emits agent_streaming WebSocket events.
+                  const streamingOn = fd.get('streaming') === 'on'
+                  const mergedSettings: Record<string, unknown> = {
+                    ...(session.settings || {}),
+                    streaming: streamingOn,
+                  }
                   await updateSession(session.id, {
                     language: fd.get('language') as string,
                     max_iterations: Number(fd.get('max_iterations')),
@@ -4446,7 +6548,9 @@ export default function SessionDetailPage() {
                     execution_timeout: Number(fd.get('execution_timeout')),
                     max_fix_attempts: Number(fd.get('max_fix_attempts')),
                     auto_install_deps: fd.get('auto_install_deps') === 'on',
-                    agent_timeout: Number(fd.get('agent_timeout')),
+                    agent_timeout: agentT,
+                    request_timeout: requestT,
+                    settings: mergedSettings,
                   })
                   // Update max_tokens for all agents
                   const newMaxTokens = Number(fd.get('max_tokens'))
@@ -4465,20 +6569,18 @@ export default function SessionDetailPage() {
                   notify.error(String(detail))
                 }
               }}
-              className="p-5 space-y-5"
+              className="p-5 space-y-3"
             >
-              {/* General section */}
-              <div>
-                <h3 className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Code2 className="w-3.5 h-3.5" />
-                  General
-                </h3>
-                <div className="grid grid-cols-3 gap-3">
+              {/* Model & Agents */}
+              <SettingsSection title="Model & Agents" defaultOpen={true}>
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">Language</label>
+                    <label className="block text-sm font-medium text-gray-300 mb-1" htmlFor="session-language-select">Language</label>
                     <select
+                      id="session-language-select"
                       name="language"
                       defaultValue={session.language}
+                      aria-label="Session language"
                       className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                     >
                       <option value="python">Python</option>
@@ -4493,20 +6595,8 @@ export default function SessionDetailPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">Max Iterations</label>
-                    <input
-                      name="max_iterations"
-                      type="number"
-                      min={1}
-                      max={50}
-                      defaultValue={session.max_iterations}
-                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Max Tokens</label>
                     {(() => {
-                      // Use MAX across agents: each provider clamps to its own limit internally
                       const limits = session.agent_configs.map(ac => {
                         const prov = providers.find(p => p.name === ac.llm_provider)
                         const caps = prov?.model_capabilities?.[ac.llm_model]
@@ -4531,83 +6621,125 @@ export default function SessionDetailPage() {
                     })()}
                   </div>
                 </div>
-              </div>
+              </SettingsSection>
 
-              {/* Code Execution section */}
-              <div>
-                <h3 className="text-xs font-semibold text-green-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Terminal className="w-3.5 h-3.5" />
-                  Code Execution
-                </h3>
-                <div className="space-y-3">
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <div>
-                      <span className="text-sm font-medium text-gray-300">Enable Code Execution</span>
-                      <p className="text-xs text-gray-500">Run generated code in sandbox to validate</p>
-                    </div>
-                    <input
-                      name="enable_code_execution"
-                      type="checkbox"
-                      defaultChecked={session.enable_code_execution}
-                      className="w-10 h-5 rounded-full appearance-none bg-gray-600 checked:bg-green-500 relative cursor-pointer transition-colors
-                        before:content-[''] before:absolute before:w-4 before:h-4 before:rounded-full before:bg-white before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-5"
-                    />
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">Sandbox Timeout (sec)</label>
-                      <input
-                        name="execution_timeout"
-                        type="number"
-                        min={10}
-                        max={300}
-                        defaultValue={session.execution_timeout}
-                        className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                      />
-                      <p className="text-xs text-indigo-400/70 mt-0.5">Code execution: 10–300s</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">Agent Timeout (sec)</label>
-                      <input
-                        name="agent_timeout"
-                        type="number"
-                        min={60}
-                        max={1800}
-                        defaultValue={session.agent_timeout ?? 300}
-                        className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                      />
-                      <p className="text-xs text-indigo-400/70 mt-0.5">LLM call: 60–1800s</p>
-                    </div>
+              {/* Execution */}
+              <SettingsSection title="Execution" defaultOpen={true}>
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div>
+                    <span className="text-sm font-medium text-gray-300">Enable Code Execution</span>
+                    <p className="text-xs text-gray-500">Run generated code in sandbox to validate</p>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-1">Max Fix Attempts</label>
-                      <input
-                        name="max_fix_attempts"
-                        type="number"
-                        min={0}
-                        max={10}
-                        defaultValue={session.max_fix_attempts}
-                        className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                      />
-                      <p className="text-xs text-indigo-400/70 mt-0.5">Per iteration</p>
-                    </div>
-                  </div>
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <div>
-                      <span className="text-sm font-medium text-gray-300">Auto-install Dependencies</span>
-                      <p className="text-xs text-gray-500">Automatically install missing packages</p>
-                    </div>
+                  <input
+                    name="enable_code_execution"
+                    type="checkbox"
+                    defaultChecked={session.enable_code_execution}
+                    className="w-10 h-5 rounded-full appearance-none bg-gray-600 checked:bg-green-500 relative cursor-pointer transition-colors
+                      before:content-[''] before:absolute before:w-4 before:h-4 before:rounded-full before:bg-white before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-5"
+                  />
+                </label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Sandbox Timeout (sec)</label>
                     <input
-                      name="auto_install_deps"
-                      type="checkbox"
-                      defaultChecked={session.auto_install_deps}
-                      className="w-10 h-5 rounded-full appearance-none bg-gray-600 checked:bg-green-500 relative cursor-pointer transition-colors
-                        before:content-[''] before:absolute before:w-4 before:h-4 before:rounded-full before:bg-white before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-5"
+                      name="execution_timeout"
+                      type="number"
+                      min={10}
+                      max={300}
+                      defaultValue={session.execution_timeout}
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                     />
-                  </label>
+                    <p className="text-xs text-indigo-400/70 mt-0.5">Code execution: 10-300s</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Request Timeout (sec)</label>
+                    <input
+                      name="request_timeout"
+                      type="number"
+                      min={30}
+                      max={3600}
+                      defaultValue={session.request_timeout ?? 300}
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                    <p className="text-xs text-indigo-400/70 mt-0.5">Per LLM call: 30-3600s</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Agent Timeout (sec)</label>
+                    <input
+                      name="agent_timeout"
+                      type="number"
+                      min={60}
+                      max={3600}
+                      defaultValue={session.agent_timeout ?? 600}
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                    <p className="text-xs text-indigo-400/70 mt-0.5">Overall agent: 60-3600s</p>
+                  </div>
                 </div>
-              </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Max Fix Attempts</label>
+                    <input
+                      name="max_fix_attempts"
+                      type="number"
+                      min={0}
+                      max={10}
+                      defaultValue={session.max_fix_attempts}
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                    <p className="text-xs text-indigo-400/70 mt-0.5">Per iteration</p>
+                  </div>
+                </div>
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div>
+                    <span className="text-sm font-medium text-gray-300">Auto-install Dependencies</span>
+                    <p className="text-xs text-gray-500">Automatically install missing packages</p>
+                  </div>
+                  <input
+                    name="auto_install_deps"
+                    type="checkbox"
+                    defaultChecked={session.auto_install_deps}
+                    className="w-10 h-5 rounded-full appearance-none bg-gray-600 checked:bg-green-500 relative cursor-pointer transition-colors
+                      before:content-[''] before:absolute before:w-4 before:h-4 before:rounded-full before:bg-white before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-5"
+                  />
+                </label>
+              </SettingsSection>
+
+              {/* Workflow */}
+              <SettingsSection title="Workflow" defaultOpen={true}>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Max Iterations</label>
+                    <input
+                      name="max_iterations"
+                      type="number"
+                      min={1}
+                      max={50}
+                      defaultValue={session.max_iterations}
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+                {/* Feature #1: streaming LLM output toggle (default ON — avoids
+                    Anthropic long-request timeouts on opus/large generations).
+                    Reads from session.settings.streaming; undefined → ON. */}
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div>
+                    <span className="text-sm font-medium text-gray-300">Enable streaming output</span>
+                    <p className="text-xs text-gray-500">
+                      Show partial LLM tokens on agent nodes as they stream in.
+                      Recommended ON to avoid Anthropic long-request timeouts.
+                    </p>
+                  </div>
+                  <input
+                    name="streaming"
+                    type="checkbox"
+                    defaultChecked={((session.settings as Record<string, unknown> | undefined)?.streaming ?? true) as boolean}
+                    className="w-10 h-5 rounded-full appearance-none bg-gray-600 checked:bg-green-500 relative cursor-pointer transition-colors
+                      before:content-[''] before:absolute before:w-4 before:h-4 before:rounded-full before:bg-white before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-5"
+                  />
+                </label>
+              </SettingsSection>
 
               {/* Footer */}
               <div className="flex justify-end gap-2 pt-2 border-t border-gray-700">
@@ -4630,6 +6762,45 @@ export default function SessionDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Улучшатели#3 wave 2 #7 — Keyboard shortcuts help modal. */}
+      <Modal
+        open={shortcutsHelpOpen}
+        onClose={() => setShortcutsHelpOpen(false)}
+        title="Keyboard shortcuts"
+        description="Press a key while the graph or canvas is focused (not while typing in an input)."
+        size="md"
+      >
+        <ul className="space-y-2 text-sm text-cf-text">
+          {[
+            { keys: ['?'], label: 'Show / hide this help' },
+            { keys: ['Esc'], label: 'Close the open panel or modal' },
+            { keys: ['p'], label: 'Toggle browser preview' },
+            { keys: ['Space'], label: 'Pause when running, resume when paused' },
+            { keys: ['c'], label: 'Focus the most-recent code viewer' },
+            { keys: ['i'], label: 'Open the intervention panel' },
+          ].map(s => (
+            <li key={s.label} className="flex items-center justify-between gap-3 py-1">
+              <span className="text-cf-text-muted">{s.label}</span>
+              <span className="flex gap-1">
+                {s.keys.map(k => (
+                  <kbd
+                    key={k}
+                    className="px-2 py-0.5 text-xs font-mono rounded border border-cf-border bg-cf-hover text-cf-text"
+                  >
+                    {k}
+                  </kbd>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex justify-end">
+          <Button variant="secondary" onClick={() => setShortcutsHelpOpen(false)}>
+            Close
+          </Button>
+        </div>
+      </Modal>
 
       {/* CSS for animations */}
       <style>{`

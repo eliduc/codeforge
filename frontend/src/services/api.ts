@@ -6,6 +6,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || `${window.location.protocol === 'h
 import type {
   SessionListItem,
   PromptTemplate,
+  PromptTemplateVersion,
   CreateSessionRequest,
   CreateInterventionRequest,
   ProviderInfo,
@@ -24,6 +25,8 @@ import type {
   ImportResponse,
   ExecutionResult,
   PaginatedResponse,
+  // КАО#VR-Wave1 Frontend — Visual Review API DTOs.
+  VisualReviewCandidate,
 } from '../types'
 
 // Response types
@@ -44,11 +47,14 @@ export interface SessionResponse {
   auto_install_deps: boolean
   auto_continue: boolean
   agent_timeout: number
+  request_timeout: number
   parent_session_id?: string
   enhancement_round: number
   created_at: string
   updated_at: string
   agent_configs: AgentConfigResponse[]
+  // Free-form per-session settings (e.g. { streaming: true })
+  settings?: Record<string, unknown> | null
 }
 
 export interface AgentConfigResponse {
@@ -62,6 +68,7 @@ export interface AgentConfigResponse {
   custom_prompt?: string | null
   thinking_effort?: string | null
   max_tokens?: number
+  temperature?: number
   enabled: boolean
   created_at: string
 }
@@ -209,7 +216,32 @@ async function apiFetchRaw(
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
-      throw new Error(error.detail || `API error: ${response.status}`)
+      // КАО#VR-27 — FastAPI ValidationError responses look like
+      //   { detail: [ { loc: [...], msg: 'Input should be a valid integer…', type: '…' }, … ] }
+      // Naively passing an array to new Error() yields the message
+      // "[object Object]" in the toast. Flatten to a human-readable string.
+      const detail = (error as { detail?: unknown }).detail
+      let msg: string
+      if (Array.isArray(detail)) {
+        msg = detail
+          .map((d) => {
+            if (d && typeof d === 'object') {
+              const obj = d as { msg?: string; loc?: unknown[]; type?: string }
+              const where = Array.isArray(obj.loc) ? obj.loc.join('.') : ''
+              const what = obj.msg || obj.type || JSON.stringify(d)
+              return where ? `${where}: ${what}` : what
+            }
+            return String(d)
+          })
+          .join('; ')
+      } else if (typeof detail === 'string' && detail) {
+        msg = detail
+      } else if (detail) {
+        msg = JSON.stringify(detail)
+      } else {
+        msg = `API error: ${response.status}`
+      }
+      throw new Error(msg)
     }
 
     return response
@@ -257,6 +289,56 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
   return apiFetch<SessionResponse>(`/api/sessions/${sessionId}`)
 }
 
+export interface SessionMetrics {
+  session_id: string
+  total_tokens: number
+  total_tokens_input: number
+  total_tokens_output: number
+  total_cost_usd: number
+  total_requests: number
+  total_time_ms: number
+  iterations_completed: number
+}
+
+export async function getSessionMetrics(sessionId: string): Promise<SessionMetrics | null> {
+  try {
+    return await apiFetch<SessionMetrics>(`/api/code/sessions/${sessionId}/metrics`)
+  } catch {
+    return null
+  }
+}
+
+export interface CheckpointResponse {
+  id: string
+  session_id: string
+  iteration: number
+  phase: string
+  total_tokens: number
+  total_cost_usd: number
+  created_at: string
+}
+
+export async function listCheckpoints(sessionId: string): Promise<CheckpointResponse[]> {
+  return apiFetch<CheckpointResponse[]>(`/api/sessions/${sessionId}/checkpoints`)
+}
+
+// Dashboard aggregate stats
+export interface DashboardStats {
+  window_days: number
+  sessions_by_status: Record<string, number>
+  total_cost_usd: number
+  total_tokens: number
+  total_requests: number
+  avg_iterations: number
+  top_providers: Array<{ provider: string; requests: number; cost_usd: number }>
+  top_models: Array<{ model: string; requests: number; cost_usd: number }>
+  daily_cost: Array<{ date: string; cost_usd: number; requests: number }>
+}
+
+export async function getDashboardStats(days = 30): Promise<DashboardStats> {
+  return apiFetch<DashboardStats>(`/api/code/dashboard/stats?days=${days}`)
+}
+
 export async function uploadFiles(files: File[]): Promise<FileUploadResponse> {
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
@@ -288,6 +370,82 @@ export async function createPullRequest(request: CreatePRRequest): Promise<Creat
   })
 }
 
+// ── Git integration ──
+
+export interface GitCommit {
+  sha: string
+  author_name: string
+  author_email: string
+  timestamp: number
+  message: string
+}
+
+export interface GitDiffEntry {
+  path: string
+  action: 'added' | 'deleted' | 'modified'
+  old_lines: number
+  new_lines: number
+}
+
+export interface GitBranch {
+  name: string
+  sha: string
+}
+
+export interface PRStatus {
+  pr_number?: number
+  state?: string
+  merged?: boolean
+  mergeable?: boolean | null
+  mergeable_state?: string
+  draft?: boolean
+  title?: string
+  html_url?: string
+  head_ref?: string
+  base_ref?: string
+  comments?: number
+  review_comments?: number
+  commits?: number
+  additions?: number
+  deletions?: number
+  changed_files?: number
+  created_at?: string
+  updated_at?: string
+  merged_at?: string | null
+  closed_at?: string | null
+}
+
+export async function listRepoBranches(url: string, token?: string): Promise<{ branches: GitBranch[] }> {
+  return apiFetch<{ branches: GitBranch[] }>('/api/sessions/list-branches', {
+    method: 'POST',
+    body: JSON.stringify({ url, token }),
+  })
+}
+
+export async function getRepoCommits(
+  sessionId: string,
+  limit = 20,
+): Promise<{ commits: GitCommit[]; branch?: string; url?: string; message?: string }> {
+  return apiFetch<{ commits: GitCommit[]; branch?: string; url?: string; message?: string }>(
+    `/api/sessions/${sessionId}/git/commits?limit=${limit}`,
+  )
+}
+
+export async function getRepoDiff(
+  sessionId: string,
+): Promise<{ diff: GitDiffEntry[]; file_count?: number; message?: string }> {
+  return apiFetch<{ diff: GitDiffEntry[]; file_count?: number; message?: string }>(
+    `/api/sessions/${sessionId}/git/diff`,
+  )
+}
+
+export async function getPullRequestStatus(prUrl: string, token?: string): Promise<PRStatus> {
+  return apiFetch<PRStatus>('/api/sessions/pr-status', {
+    method: 'POST',
+    body: JSON.stringify({ pr_url: prUrl, token }),
+  })
+}
+
 export async function createSession(data: CreateSessionRequest): Promise<SessionResponse> {
   return apiFetch<SessionResponse>('/api/sessions/', {
     method: 'POST',
@@ -297,7 +455,7 @@ export async function createSession(data: CreateSessionRequest): Promise<Session
 
 export async function updateSession(
   sessionId: string,
-  data: Partial<Pick<CreateSessionRequest, 'name' | 'specification' | 'initial_code' | 'initial_docs' | 'language' | 'max_iterations' | 'enable_code_execution' | 'execution_timeout' | 'max_fix_attempts' | 'auto_install_deps' | 'auto_continue' | 'agent_timeout'>>
+  data: Partial<Pick<CreateSessionRequest, 'name' | 'specification' | 'initial_code' | 'initial_docs' | 'language' | 'max_iterations' | 'enable_code_execution' | 'execution_timeout' | 'max_fix_attempts' | 'auto_install_deps' | 'auto_continue' | 'agent_timeout' | 'request_timeout' | 'settings'>>
 ): Promise<SessionResponse> {
   return apiFetch<SessionResponse>(`/api/sessions/${sessionId}`, {
     method: 'PATCH',
@@ -318,7 +476,7 @@ export async function addAgentConfig(
 export async function updateAgentConfig(
   sessionId: string,
   agentId: string | number,
-  data: { llm_provider?: string; llm_model?: string; thinking_effort?: string | null; max_tokens?: number; custom_prompt?: string | null; enabled?: boolean },
+  data: { llm_provider?: string; llm_model?: string; thinking_effort?: string | null; max_tokens?: number; temperature?: number; custom_prompt?: string | null; enabled?: boolean },
 ): Promise<AgentConfigResponse> {
   return apiFetch<AgentConfigResponse>(`/api/sessions/${sessionId}/agents/${agentId}`, {
     method: 'PATCH',
@@ -339,6 +497,43 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await apiFetch(`/api/sessions/${sessionId}`, {
     method: 'DELETE',
   })
+}
+
+export interface BulkDeleteResult {
+  deleted_count: number
+  failed_ids: string[]
+}
+
+/**
+ * Delete multiple sessions via the dedicated bulk-delete endpoint.
+ * Falls back to parallel single-delete calls if the bulk endpoint is unavailable.
+ * Returns the count of successfully deleted sessions and the IDs that failed.
+ */
+export async function bulkDeleteSessions(sessionIds: string[]): Promise<BulkDeleteResult> {
+  if (sessionIds.length === 0) {
+    return { deleted_count: 0, failed_ids: [] }
+  }
+  try {
+    return await apiFetch<BulkDeleteResult>('/api/sessions/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ session_ids: sessionIds }),
+    })
+  } catch (err) {
+    // Fallback: fan out parallel DELETE calls if bulk endpoint not available (older backend)
+    const results = await Promise.allSettled(
+      sessionIds.map(id => deleteSession(id).then(() => id)),
+    )
+    const failed_ids: string[] = []
+    let deleted_count = 0
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled') {
+        deleted_count++
+      } else {
+        failed_ids.push(sessionIds[idx])
+      }
+    })
+    return { deleted_count, failed_ids }
+  }
 }
 
 export async function startSession(sessionId: string): Promise<SessionResponse> {
@@ -367,6 +562,13 @@ export async function cancelSession(sessionId: string): Promise<SessionResponse>
 
 export async function resetSession(sessionId: string): Promise<SessionResponse> {
   return apiFetch<SessionResponse>(`/api/sessions/${sessionId}/reset`, {
+    method: 'POST',
+  })
+}
+
+// КАО#VR-11 RestartFromScratch — purge all artifacts then re-run from iteration 0.
+export async function restartSession(sessionId: string): Promise<SessionResponse> {
+  return apiFetch<SessionResponse>(`/api/sessions/${sessionId}/restart`, {
     method: 'POST',
   })
 }
@@ -501,6 +703,22 @@ export async function deletePromptTemplate(promptId: string): Promise<void> {
   })
 }
 
+export async function listPromptVersions(
+  promptId: string | number
+): Promise<PromptTemplateVersion[]> {
+  return apiFetch<PromptTemplateVersion[]>(`/api/prompts/${promptId}/versions`)
+}
+
+export async function rollbackPromptVersion(
+  promptId: string | number,
+  versionNumber: number
+): Promise<PromptTemplate> {
+  return apiFetch<PromptTemplate>(
+    `/api/prompts/${promptId}/rollback/${versionNumber}`,
+    { method: 'POST' }
+  )
+}
+
 // Settings API
 export async function getLLMProviders(): Promise<ProvidersResponse> {
   return apiFetch<ProvidersResponse>('/api/settings/providers')
@@ -605,6 +823,19 @@ export async function importSessionsConfirm(file: File): Promise<ImportResponse>
 // The returned object exposes the same interface as a native WebSocket
 // but swaps the underlying connection on reconnect so callers (e.g.
 // wsRef.current) keep working without re-assignment.
+
+// Улучшатели#3 P0·M — WS reconnect UI: surface connection lifecycle state to
+// consumers so they can render reconnect/disconnect indicators.
+export type WSConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+
+export interface WSConnectionState {
+  status: WSConnectionStatus
+  /** 1-based attempt counter for the *next* reconnect when status === 'reconnecting'. */
+  attempt: number
+  /** Maximum reconnection attempts before giving up. */
+  maxRetries: number
+}
+
 export interface ReconnectingWebSocket {
   /** Attach a handler that receives MessageEvent from the *current* connection. */
   set onmessage(handler: ((ev: MessageEvent) => void) | null)
@@ -618,7 +849,12 @@ export interface ReconnectingWebSocket {
   /** Called after a successful reconnection (not on the initial connect). */
   set onreconnect(handler: (() => void) | null)
   get onreconnect(): (() => void) | null
+  /** Improver#3 P0·M — WS reconnect UI: fires on any connection-state transition. */
+  set onstatechange(handler: ((state: WSConnectionState) => void) | null)
+  get onstatechange(): ((state: WSConnectionState) => void) | null
   readonly readyState: number
+  /** Current connection lifecycle state (snapshot). */
+  readonly connectionState: WSConnectionState
   send(data: string | ArrayBuffer | Blob | ArrayBufferView): void
   close(code?: number, reason?: string): void
 }
@@ -638,6 +874,20 @@ export function createWebSocket(
   let _onerror: ((ev: Event) => void) | null = null
   let _onclose: ((ev: CloseEvent) => void) | null = null
   let _onreconnect: (() => void) | null = null
+  // Улучшатели#3 P0·M — WS reconnect UI: state-change observer.
+  let _onstatechange: ((state: WSConnectionState) => void) | null = null
+
+  // Улучшатели#3 P0·M — WS reconnect UI: tracked connection state.
+  let _state: WSConnectionState = { status: 'connecting', attempt: 0, maxRetries }
+
+  function setState(next: Partial<WSConnectionState>) {
+    _state = { ..._state, ...next }
+    try {
+      _onstatechange?.(_state)
+    } catch (err) {
+      console.error('WS onstatechange handler threw:', err)
+    }
+  }
 
   let current: WebSocket
 
@@ -647,6 +897,8 @@ export function createWebSocket(
       const isReconnect = hasConnectedOnce
       hasConnectedOnce = true
       retryCount = 0
+      // Улучшатели#3 P0·M — WS reconnect UI: announce successful connection.
+      setState({ status: 'connected', attempt: 0 })
       _onopen?.(ev)
       // Fire reconnect callback after a successful re-open (not the first connect)
       if (isReconnect) {
@@ -657,16 +909,23 @@ export function createWebSocket(
     ws.onerror = (ev) => _onerror?.(ev)
     ws.onclose = (ev) => {
       if (explicitlyClosed) {
+        // Component-initiated close — keep the last state but mark disconnected silently.
+        // We deliberately do NOT emit a 'disconnected' UI event here to avoid flashing
+        // the pill during unmount/navigation.
         _onclose?.(ev)
         return
       }
       if (ev.code === 4001) {
+        // Улучшатели#3 P0·M — WS reconnect UI: auth failure, not recoverable.
+        setState({ status: 'disconnected', attempt: retryCount })
         _onclose?.(ev)
         return
       }
       if (retryCount < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, retryCount)
         retryCount++
+        // Улучшатели#3 P0·M — WS reconnect UI: surface attempt counter.
+        setState({ status: 'reconnecting', attempt: retryCount })
         console.warn(
           `WebSocket closed (code=${ev.code}). Reconnecting in ${delay}ms (attempt ${retryCount}/${maxRetries})...`,
         )
@@ -675,6 +934,8 @@ export function createWebSocket(
           wireHandlers(current)
         }, delay)
       } else {
+        // Улучшатели#3 P0·M — WS reconnect UI: gave up after maxRetries.
+        setState({ status: 'disconnected', attempt: retryCount })
         console.error(`WebSocket reconnection failed after ${maxRetries} attempts`)
         _onclose?.(ev)
       }
@@ -701,7 +962,17 @@ export function createWebSocket(
     set onclose(h) { _onclose = h },
     get onreconnect() { return _onreconnect },
     set onreconnect(h) { _onreconnect = h },
+    get onstatechange() { return _onstatechange },
+    set onstatechange(h) {
+      _onstatechange = h
+      // Улучшатели#3 P0·M — WS reconnect UI: replay current state to new subscriber
+      // so late-mounted UIs immediately reflect the lifecycle.
+      if (h) {
+        try { h(_state) } catch (err) { console.error('WS onstatechange handler threw:', err) }
+      }
+    },
     get readyState() { return current.readyState },
+    get connectionState() { return _state },
     send(data) { current.send(data) },
     close(code?: number, reason?: string) {
       explicitlyClosed = true
@@ -751,4 +1022,364 @@ export async function verifyOTP(
 
 export async function getCurrentUser(): Promise<AuthUser & { created_at: string; last_login_at: string | null }> {
   return apiFetch('/api/auth/me')
+}
+
+/**
+ * КАО#SR-4 Round 4 — Anonymous-safe variant used at app startup.
+ *
+ * On stage/prod the backend always requires auth, so calling /api/auth/me
+ * without a token produces a 401 that the browser logs as a console.error.
+ * For the anonymous /login page mount this is just noise — there is no real
+ * error, the app is simply checking whether dev-mode is on (i.e. the backend
+ * is configured to return a "dev" user without a token).
+ *
+ * This helper short-circuits when no token is stored AND we are running on a
+ * non-localhost origin. On localhost we still probe (so dev-mode detection
+ * keeps working). On stage/prod we just return null silently.
+ */
+export async function probeCurrentUserForDevMode(): Promise<
+  (AuthUser & { created_at: string; last_login_at: string | null }) | null
+> {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname
+    const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
+    if (!isLocal) {
+      return null
+    }
+  }
+  try {
+    return await apiFetch('/api/auth/me')
+  } catch {
+    return null
+  }
+}
+
+// ============================================================================
+// Session Templates API
+// ============================================================================
+
+export interface TemplateResponse {
+  id: string
+  name: string
+  description?: string | null
+  agent_configs: any[]
+  language: string
+  max_iterations: number
+  auto_continue: boolean
+  enable_code_execution: boolean
+  execution_timeout: number
+  max_fix_attempts: number
+  auto_install_deps: boolean
+  agent_timeout: number
+  request_timeout: number
+  settings?: Record<string, any> | null
+  created_at: string
+  updated_at: string
+}
+
+export async function listTemplates(): Promise<TemplateResponse[]> {
+  return apiFetch<TemplateResponse[]>('/api/templates/')
+}
+
+export async function getTemplate(templateId: string): Promise<TemplateResponse> {
+  return apiFetch<TemplateResponse>(`/api/templates/${templateId}`)
+}
+
+export async function createTemplateFromSession(
+  sessionId: string,
+  name: string,
+  description?: string,
+): Promise<TemplateResponse> {
+  return apiFetch<TemplateResponse>(`/api/templates/from-session/${sessionId}`, {
+    method: 'POST',
+    body: JSON.stringify({ name, description: description || null }),
+  })
+}
+
+export async function updateTemplate(
+  templateId: string,
+  data: { name?: string; description?: string | null },
+): Promise<TemplateResponse> {
+  return apiFetch<TemplateResponse>(`/api/templates/${templateId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteTemplate(templateId: string): Promise<void> {
+  await apiFetch(`/api/templates/${templateId}`, { method: 'DELETE' })
+}
+
+export async function applyTemplate(
+  templateId: string,
+  specification: string,
+  name: string,
+): Promise<SessionResponse> {
+  return apiFetch<SessionResponse>(`/api/templates/${templateId}/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ name, specification }),
+  })
+}
+
+// ============================================================================
+// Spec Helper API
+// ============================================================================
+
+export interface SpecScoreIssue {
+  severity: string
+  description: string
+  suggestion?: string
+}
+
+export interface SpecScoreResponse {
+  overall_score: number
+  issues: SpecScoreIssue[]
+  estimated_complexity: 'trivial' | 'moderate' | 'complex'
+  detected_keywords: string[]
+  word_count: number
+}
+
+export interface CostEstimateResponse {
+  estimated_tokens_per_iter: number
+  estimated_total_tokens: number
+  estimated_cost_usd: number
+  estimated_time_seconds: number
+  breakdown: Record<string, number>
+}
+
+export async function scoreSpec(specification: string, language?: string): Promise<SpecScoreResponse> {
+  return apiFetch<SpecScoreResponse>('/api/spec-helper/spec-score', {
+    method: 'POST',
+    body: JSON.stringify({ specification, language }),
+  })
+}
+
+export async function estimateCost(
+  specification: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  agent_configs: any[],
+  max_iterations: number,
+): Promise<CostEstimateResponse> {
+  return apiFetch<CostEstimateResponse>('/api/spec-helper/cost-estimate', {
+    method: 'POST',
+    body: JSON.stringify({ specification, agent_configs, max_iterations }),
+  })
+}
+
+// ============================================================================
+// Share API
+// ============================================================================
+
+export interface ShareLinkResponse {
+  share_token: string
+  share_url: string
+}
+
+export interface SharedSessionResponse {
+  name: string
+  specification: string
+  status: string
+  final_code?: string
+  language?: string
+  created_at: string
+}
+
+export async function createShareLink(sessionId: string): Promise<ShareLinkResponse> {
+  return apiFetch<ShareLinkResponse>(`/api/sessions/${sessionId}/share`, { method: 'POST' })
+}
+
+export async function revokeShareLink(sessionId: string): Promise<void> {
+  await apiFetch<void>(`/api/sessions/${sessionId}/share`, { method: 'DELETE' })
+}
+
+export async function getSharedSession(token: string): Promise<SharedSessionResponse> {
+  return apiFetch<SharedSessionResponse>(`/api/share/${token}`)
+}
+
+// ============================================================================
+// Auto-generate (Tests / Docs) API
+// ============================================================================
+
+export interface GenerateTestsResponse {
+  tests_code: string
+  language: string
+  stub?: boolean
+}
+
+export interface GenerateDocsResponse {
+  readme: string
+  api_docs?: string
+  stub?: boolean
+}
+
+export async function generateTests(sessionId: string): Promise<GenerateTestsResponse> {
+  return apiFetch<GenerateTestsResponse>(`/api/sessions/${sessionId}/generate-tests`, { method: 'POST' })
+}
+
+export async function generateDocs(sessionId: string): Promise<GenerateDocsResponse> {
+  return apiFetch<GenerateDocsResponse>(`/api/sessions/${sessionId}/generate-docs`, { method: 'POST' })
+}
+
+// ============================================================================
+// Deploy API (Feature #10) — Vercel one-click deploy for HTML/JS sessions
+// ============================================================================
+
+export interface VercelDeployResponse {
+  deploy_url: string
+  inspect_url?: string
+  project_id?: string
+  deployment_id?: string
+}
+
+export async function deployToVercel(
+  sessionId: string,
+  token: string,
+  projectName?: string,
+): Promise<VercelDeployResponse> {
+  return apiFetch<VercelDeployResponse>(`/api/sessions/${sessionId}/deploy/vercel`, {
+    method: 'POST',
+    body: JSON.stringify({ token, project_name: projectName }),
+  })
+}
+
+// ============================================================================
+// КАО#VR-Wave1 Frontend — Visual Review API
+// ============================================================================
+
+export interface VisualReviewResponse {
+  candidates: VisualReviewCandidate[]
+  /** VR-41 — number of coder agents configured on the session. UI uses
+      `total_configured_coders - candidates.length` to show a "N of M coders
+      failed" warning when some agents didn't produce screenshots. */
+  total_configured_coders?: number
+  /** VR-41 — coder_index values that were configured but absent from
+      candidates (failed mid-pipeline). Used to label the warning banner. */
+  missing_coder_indices?: number[]
+}
+
+export interface VisualReviewScore {
+  code_version_id: string
+  score: number  // 0-10
+}
+
+/** Fetch the list of candidates plus their screenshots for the review session. */
+export async function getVisualReview(sessionId: string): Promise<VisualReviewResponse> {
+  return apiFetch<VisualReviewResponse>(`/api/sessions/${sessionId}/visual-review`)
+}
+
+/** Submit user scores and unblock the workflow (server proceeds to finalize). */
+export async function submitVisualReviewScores(
+  sessionId: string,
+  scores: VisualReviewScore[],
+): Promise<void> {
+  await apiFetch<void>(`/api/sessions/${sessionId}/visual-review/scores`, {
+    method: 'POST',
+    body: JSON.stringify({ scores }),
+  })
+}
+
+/** Skip user review entirely — server falls back to vision-LLM / auto pick. */
+export async function skipVisualReview(sessionId: string): Promise<void> {
+  await apiFetch<void>(`/api/sessions/${sessionId}/visual-review/skip`, {
+    method: 'POST',
+  })
+}
+
+/** Fetch a candidate's raw HTML for live preview inside an <iframe srcdoc>.
+ *
+ * Returns plain text (the HTML body), NOT JSON. The caller renders it via
+ * srcdoc rather than src so the iframe loads from an in-process blob URL —
+ * this is critical because the platform's nginx sets X-Frame-Options: DENY
+ * on every response, which would block a src-based iframe load. КАО#VR-23.
+ */
+export async function getVisualReviewPreviewHtml(
+  sessionId: string,
+  codeVersionId: string,
+): Promise<string> {
+  const response = await apiFetchRaw(
+    `/api/sessions/${sessionId}/visual-review/${codeVersionId}/preview`,
+    { headers: { Accept: 'text/html' } },
+  )
+  if (!response.ok) {
+    throw new Error(`Preview fetch failed: HTTP ${response.status}`)
+  }
+  return response.text()
+}
+
+// ============================================================================
+// Webhooks API
+// ============================================================================
+
+export type WebhookType = 'slack' | 'discord' | 'generic'
+
+export interface WebhookResponseT {
+  id: string
+  name: string
+  url: string
+  webhook_type: WebhookType
+  event_filter: string | null
+  enabled: boolean
+  has_secret: boolean
+  last_sent_at: string | null
+  last_status: number | null
+  last_error: string | null
+  total_sent: number
+  total_failed: number
+  created_at: string
+  updated_at: string
+}
+
+export interface WebhookCreateRequest {
+  name: string
+  url: string
+  webhook_type: WebhookType
+  event_filter?: string | null
+  secret?: string | null
+  enabled?: boolean
+}
+
+export interface WebhookUpdateRequest {
+  name?: string
+  url?: string
+  webhook_type?: WebhookType
+  event_filter?: string | null
+  secret?: string | null
+  enabled?: boolean
+}
+
+export interface WebhookTestResult {
+  success: boolean
+  status_code: number | null
+  error: string | null
+}
+
+export async function listWebhooks(): Promise<WebhookResponseT[]> {
+  return apiFetch<WebhookResponseT[]>('/api/webhooks/')
+}
+
+export async function createWebhook(data: WebhookCreateRequest): Promise<WebhookResponseT> {
+  return apiFetch<WebhookResponseT>('/api/webhooks/', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateWebhook(
+  webhookId: string,
+  data: WebhookUpdateRequest,
+): Promise<WebhookResponseT> {
+  return apiFetch<WebhookResponseT>(`/api/webhooks/${webhookId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteWebhook(webhookId: string): Promise<void> {
+  await apiFetch(`/api/webhooks/${webhookId}`, { method: 'DELETE' })
+}
+
+export async function testWebhook(webhookId: string): Promise<WebhookTestResult> {
+  return apiFetch<WebhookTestResult>(`/api/webhooks/${webhookId}/test`, {
+    method: 'POST',
+  })
 }

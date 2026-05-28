@@ -71,24 +71,31 @@ const typeLabels: Record<ToastType, string> = {
 
 /* ── Toast render component ─────────────────────────────────── */
 
+interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
 interface StyledToastProps {
   t: Toast
   type: ToastType
   message: string
   title?: string
+  action?: ToastAction
 }
 
-function StyledToastContent({ t, type, message, title }: StyledToastProps) {
+function StyledToastContent({ t, type, message, title, action }: StyledToastProps) {
   const s = styles[type]
   const displayTitle = title || typeLabels[type]
 
+  // Улучшатели#5 P1·M — cf-* tokens for theme-aware surface (was gray-800/gray-900).
   return (
     <div
       className={`
         ${t.visible ? 'animate-toast-enter' : 'animate-toast-leave'}
         max-w-sm w-full pointer-events-auto
         rounded-xl border ${s.border}
-        bg-gradient-to-b from-gray-800/95 to-gray-900/95
+        bg-cf-panel
         backdrop-blur-xl shadow-2xl
         overflow-hidden
         flex
@@ -109,15 +116,27 @@ function StyledToastContent({ t, type, message, title }: StyledToastProps) {
           <p className={`text-sm font-semibold ${s.titleColor} leading-tight`}>
             {displayTitle}
           </p>
-          <p className="text-[13px] text-gray-300 mt-1 leading-relaxed break-words">
+          <p className="text-[13px] text-cf-text mt-1 leading-relaxed break-words">
             {message}
           </p>
+          {action && (
+            <button
+              onClick={() => {
+                action.onClick()
+                toast.dismiss(t.id)
+              }}
+              className={`mt-2 text-xs font-semibold ${s.titleColor} hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 ${s.iconText} rounded`}
+            >
+              {action.label}
+            </button>
+          )}
         </div>
 
-        {/* Dismiss button */}
+        {/* Dismiss button — cf-* tokens. */}
         <button
           onClick={() => toast.dismiss(t.id)}
-          className="p-1 rounded-md text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 transition-colors shrink-0"
+          aria-label="Dismiss notification"
+          className="p-1 rounded-md text-cf-text-muted hover:text-cf-text hover:bg-cf-hover transition-colors shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
@@ -131,18 +150,92 @@ function StyledToastContent({ t, type, message, title }: StyledToastProps) {
 interface NotifyOptions {
   title?: string
   duration?: number
+  action?: ToastAction
+}
+
+// Улучшатели#5 P1·M — Settings → Notifications: toast verbosity gate.
+// `silent` keeps only `error` (hard failures must still surface). `important-only`
+// adds `warning` (sensible default — actionable, not noisy). `verbose` keeps
+// everything including success/info confirmations.
+type ToastVerbosity = 'verbose' | 'important-only' | 'silent'
+
+function readVerbosity(): ToastVerbosity {
+  try {
+    const raw = typeof window !== 'undefined'
+      ? window.localStorage.getItem('codeforge.prefs.toastVerbosity')
+      : null
+    if (raw === 'verbose' || raw === 'important-only' || raw === 'silent') return raw
+  } catch {
+    // localStorage unavailable (SSR / private mode) — fall through.
+  }
+  return 'important-only'
+}
+
+function shouldShow(type: ToastType): boolean {
+  const v = readVerbosity()
+  if (v === 'verbose') return true
+  if (v === 'silent') return type === 'error'
+  return type === 'error' || type === 'warning'
+}
+
+function maybePlaySound(type: ToastType) {
+  try {
+    if (typeof window === 'undefined') return
+    if (type !== 'error' && type !== 'warning') return
+    if (window.localStorage.getItem('codeforge.prefs.soundEnabled') !== 'true') return
+    const Ctor = window.AudioContext
+      || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctor) return
+    const ctx = new Ctor()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.frequency.value = type === 'error' ? 220 : 440
+    gain.gain.value = 0.05
+    osc.start()
+    osc.stop(ctx.currentTime + 0.15)
+  } catch {
+    // best-effort
+  }
+}
+
+function maybeShowDesktop(type: ToastType, message: string, title?: string) {
+  try {
+    if (typeof window === 'undefined' || typeof Notification === 'undefined') return
+    if (window.localStorage.getItem('codeforge.prefs.desktopNotifications') !== 'true') return
+    if (Notification.permission !== 'granted') return
+    if (type !== 'error' && type !== 'warning') return
+    new Notification(title || typeLabels[type], { body: message })
+  } catch {
+    // best-effort
+  }
 }
 
 function showToast(type: ToastType, message: string, opts?: NotifyOptions) {
-  const duration = opts?.duration ?? (type === 'error' ? 6000 : type === 'warning' ? 5000 : 4000)
+  // Verbosity gate — short-circuit before rendering anything.
+  if (!shouldShow(type)) return ''
 
+  maybePlaySound(type)
+  maybeShowDesktop(type, message, opts?.title)
+
+  // Actionable toasts get a longer default duration so users can react
+  const duration = opts?.duration ?? (
+    opts?.action ? 10000 :
+    type === 'error' ? 6000 :
+    type === 'warning' ? 5000 : 4000
+  )
+
+  // Улучшатели#5 P1·S — Toaster z-stack / position-rule conflict.
+  // Position is owned by the <Toaster> container in Layout.tsx (top: 80, top-right).
+  // Setting it here previously bypassed the container offset and stacked toasts
+  // at the viewport edge instead of below the session header bar.
   return toast.custom(
     (t) => (
-      <StyledToastContent t={t} type={type} message={message} title={opts?.title} />
+      <StyledToastContent t={t} type={type} message={message} title={opts?.title} action={opts?.action} />
     ),
     {
       duration,
-      position: 'top-right',
     }
   )
 }
@@ -152,6 +245,13 @@ export const notify = {
   success: (message: string, opts?: NotifyOptions) => showToast('success', message, opts),
   warning: (message: string, opts?: NotifyOptions) => showToast('warning', message, opts),
   info:    (message: string, opts?: NotifyOptions) => showToast('info', message, opts),
+}
+
+// КАО W4 testability: expose notify on window so e2e specs can drive
+// toasts without going through real user actions. Read-only mirror —
+// production behaviour is unchanged.
+if (typeof window !== 'undefined') {
+  ;(window as unknown as { __cf_notify?: typeof notify }).__cf_notify = notify
 }
 
 export default notify

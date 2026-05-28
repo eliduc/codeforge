@@ -8,11 +8,22 @@ from datetime import datetime
 from typing import Dict, Set, Optional, Any
 from uuid import UUID
 
+from app.core.defaults import (
+    WS_MAX_MESSAGE_SIZE_BYTES,
+    WS_RECEIVE_TIMEOUT_SEC,
+)
+
+# Timeout for waiting on client messages (seconds).
+# If a client sends nothing for this long the connection is dropped.
+WS_RECEIVE_TIMEOUT = WS_RECEIVE_TIMEOUT_SEC  # 5 minutes
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.api.auth import validate_ws_api_key
+from sqlalchemy import select
+
+from app.api.auth import decode_jwt_token, validate_ws_api_key
 
 # Maximum incoming WS message size (bytes) — reject oversized payloads
-MAX_WS_MESSAGE_SIZE = 64 * 1024  # 64 KB
+MAX_WS_MESSAGE_SIZE = WS_MAX_MESSAGE_SIZE_BYTES  # 64 KB
 
 logger = logging.getLogger(__name__)
 
@@ -195,14 +206,23 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
+    # Capture user_id from JWT (if any) so subscribe can enforce ownership.
+    # Pure API-key auth produces user_id=None and keeps full access.
+    _payload = decode_jwt_token(token) if token else None
+    _ws_user_id = _payload.get("sub") if _payload else None
+
     await session_manager.connect(websocket)
 
     current_subscriptions: Set[str] = set()
 
     try:
         while True:
-            # Receive message
-            data = await websocket.receive_text()
+            # Receive message (with timeout to prevent idle connections consuming resources)
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=WS_RECEIVE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.info("WebSocket global endpoint timed out (no message in %ds), closing", WS_RECEIVE_TIMEOUT)
+                break
 
             # Reject oversized messages
             if len(data) > MAX_WS_MESSAGE_SIZE:
@@ -228,6 +248,41 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "message": "Invalid session ID format",
                             }))
                             continue
+
+                        # Multi-tenancy: enforce session ownership for JWT users.
+                        # API-key callers (_ws_user_id is None) skip this check.
+                        if _ws_user_id is not None:
+                            from app.db.database import AsyncSessionLocal
+                            from app.db.models import Session as SessionModel
+
+                            try:
+                                async with AsyncSessionLocal() as db_check:
+                                    res = await db_check.execute(
+                                        select(SessionModel.user_id).where(
+                                            SessionModel.id == session_id
+                                        )
+                                    )
+                                    owner = res.scalar_one_or_none()
+                            except Exception as exc:  # noqa: BLE001
+                                logger.error(
+                                    f"WS subscribe ownership check failed for {session_id}: {exc}"
+                                )
+                                await websocket.send_text(json.dumps({
+                                    "type": "error",
+                                    "message": "Internal error during subscribe",
+                                }))
+                                continue
+
+                            # Same 4004-style "not found" message whether the
+                            # session is missing or owned by someone else —
+                            # don't leak existence.
+                            if owner is None or str(owner) != str(_ws_user_id):
+                                await websocket.send_text(json.dumps({
+                                    "type": "error",
+                                    "message": "Session not found",
+                                }))
+                                continue
+
                         await session_manager.subscribe(websocket, session_id)
                         current_subscriptions.add(session_id)
                         await websocket.send_text(json.dumps({
@@ -295,7 +350,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @ws_router.websocket("/ws/{session_id}")
 async def session_websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for a specific session."""
+    """WebSocket endpoint for a specific session.
+
+    Multi-tenancy: when the token is a JWT, the session must be owned by
+    the JWT's user. API-key tokens (no 'sub') keep full access for backwards
+    compat. A 4004 close code is used for missing sessions and 4003 for
+    forbidden — the close code mirrors HTTP 404/403 semantics but the
+    reason string is intentionally generic.
+    """
     # Validate session_id is a valid UUID format
     try:
         UUID(session_id)
@@ -309,11 +371,44 @@ async def session_websocket_endpoint(websocket: WebSocket, session_id: str):
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
+    # If the token is a JWT, enforce session ownership before accepting the
+    # socket. Pure API-key auth (decode_jwt_token returns None) skips this
+    # check so legacy/admin clients keep working.
+    payload = decode_jwt_token(token) if token else None
+    user_id = payload.get("sub") if payload else None
+    if user_id:
+        from app.db.database import AsyncSessionLocal
+        from app.db.models import Session as SessionModel
+
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(SessionModel.user_id).where(SessionModel.id == session_id)
+                )
+                owner = result.scalar_one_or_none()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"WS ownership check failed for session {session_id}: {exc}")
+            await websocket.close(code=1011, reason="Internal error")
+            return
+
+        # Use the same 4004 code for "not found OR not yours" to avoid
+        # leaking the existence of other users' sessions.
+        if owner is None:
+            await websocket.close(code=4004, reason="Session not found")
+            return
+        if str(owner) != str(user_id):
+            await websocket.close(code=4004, reason="Session not found")
+            return
+
     await session_manager.connect(websocket, session_id)
 
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=WS_RECEIVE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.info("WebSocket session endpoint timed out (no message in %ds), closing", WS_RECEIVE_TIMEOUT)
+                break
 
             # Reject oversized messages
             if len(data) > MAX_WS_MESSAGE_SIZE:

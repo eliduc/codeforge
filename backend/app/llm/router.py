@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -21,7 +22,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RateLimiter:
-    """Simple sliding window rate limiter."""
+    """Simple sliding window rate limiter.
+
+    NOTE: This limiter is per-process. In multi-worker deployments
+    (uvicorn --workers N), each worker has its own bucket — total
+    request rate is approximately rate_per_minute * N. For strict
+    global limits, use an external queue (Redis-backed) — not yet
+    implemented.
+
+    The asyncio.Lock makes it safe within a single async event loop.
+    """
 
     max_requests: int
     window_seconds: int = 60
@@ -169,6 +179,8 @@ class LLMRouter:
         system_prompt: str | None = None,
         thinking_effort: str | None = None,
         wait_for_rate_limit: bool = True,
+        request_timeout: float | None = None,
+        request_json_mode: bool = False,
         **kwargs: Any,
     ) -> LLMResponse | LLMError:
         """Generate a response from the specified provider/model."""
@@ -186,17 +198,25 @@ class LLMRouter:
                 retryable=False,
             )
 
-        # Check model support
+        # Check model support — fall back to first available model if requested model is stale
         if not llm_provider.supports_model(model):
             available = llm_provider.available_models
-            logger.error(f"Model '{model}' not in available models for {provider}: {available}")
-            return LLMError(
-                message=f"Model '{model}' not supported by provider '{provider}'. Available: {available}",
-                provider=provider,
-                model=model,
-                error_type="model_not_supported",
-                retryable=False,
-            )
+            if available:
+                fallback_model = available[0]
+                logger.warning(
+                    f"Model '{model}' not available for {provider}. "
+                    f"Falling back to '{fallback_model}'. Available: {available}"
+                )
+                model = fallback_model
+            else:
+                logger.error(f"Model '{model}' not in available models for {provider}: {available}")
+                return LLMError(
+                    message=f"Model '{model}' not supported by provider '{provider}'. Available: {available}",
+                    provider=provider,
+                    model=model,
+                    error_type="model_not_supported",
+                    retryable=False,
+                )
 
         # Rate limiting
         rate_limiter = self._rate_limiters[provider]
@@ -223,6 +243,8 @@ class LLMRouter:
                 max_tokens=max_tokens,
                 system_prompt=system_prompt,
                 thinking_effort=thinking_effort,
+                request_timeout=request_timeout,
+                request_json_mode=request_json_mode,
                 **kwargs,
             )
 
@@ -238,6 +260,96 @@ class LLMRouter:
 
         except Exception as e:
             logger.exception(f"Error generating response from {provider}/{model}")
+            return LLMError(
+                message=str(e),
+                provider=provider,
+                model=model,
+                error_type="unknown",
+                retryable=False,
+                raw_error=e,
+            )
+
+    async def generate_stream(
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        on_chunk: Callable[[str], Awaitable[None]],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        system_prompt: str | None = None,
+        thinking_effort: str | None = None,
+        wait_for_rate_limit: bool = True,
+        request_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse | LLMError:
+        """Streaming variant of :meth:`generate`.
+
+        Provider-level support is optional — :class:`BaseLLMProvider` ships a
+        default that wraps ``generate`` and emits the full text as a single
+        chunk, so this is safe to call for any provider. Only the Anthropic
+        provider currently delivers true incremental streaming.
+        """
+        await self.initialize()
+
+        llm_provider = self._providers.get(provider)
+        if not llm_provider:
+            return LLMError(
+                message=f"Provider '{provider}' not found or not configured",
+                provider=provider,
+                model=model,
+                error_type="provider_not_found",
+                retryable=False,
+            )
+
+        if not llm_provider.supports_model(model):
+            available = llm_provider.available_models
+            if available:
+                model = available[0]
+            else:
+                return LLMError(
+                    message=f"Model '{model}' not supported by provider '{provider}'.",
+                    provider=provider,
+                    model=model,
+                    error_type="model_not_supported",
+                    retryable=False,
+                )
+
+        rate_limiter = self._rate_limiters[provider]
+        if wait_for_rate_limit:
+            acquired = await rate_limiter.wait_and_acquire(timeout=120.0)
+        else:
+            acquired = await rate_limiter.acquire()
+        if not acquired:
+            return LLMError(
+                message=f"Rate limit exceeded for provider '{provider}'",
+                provider=provider,
+                model=model,
+                error_type="rate_limit",
+                retryable=True,
+            )
+
+        try:
+            result = await llm_provider.generate_stream(
+                prompt=prompt,
+                model=model,
+                on_chunk=on_chunk,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                thinking_effort=thinking_effort,
+                request_timeout=request_timeout,
+                **kwargs,
+            )
+            if isinstance(result, LLMResponse):
+                result.raw_response = result.raw_response or {}
+                cost = llm_provider.calculate_cost(
+                    model, result.input_tokens, result.output_tokens, result.thinking_tokens
+                )
+                result.raw_response["calculated_cost_usd"] = cost
+            return result
+        except Exception as e:
+            logger.exception(f"Error streaming response from {provider}/{model}")
             return LLMError(
                 message=str(e),
                 provider=provider,

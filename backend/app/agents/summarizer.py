@@ -201,7 +201,8 @@ class SummarizerAgent(BaseAgent):
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 cost_usd=self.llm_router.calculate_cost(
-                    self.provider, self.model, response.input_tokens, response.output_tokens
+                    self.provider, self.model, response.input_tokens, response.output_tokens,
+                    getattr(response, 'thinking_tokens', 0) or 0,
                 ),
                 latency_ms=response.latency_ms,
                 raw_response=response.raw_response,

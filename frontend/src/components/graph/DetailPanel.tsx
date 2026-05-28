@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useRef } from 'react'
-import { 
-  X, 
-  Code2, 
-  FileText, 
-  AlertTriangle, 
+import {
+  X,
+  Code2,
+  FileText,
+  AlertTriangle,
   AlertCircle,
   Info,
   ChevronDown,
@@ -29,8 +29,13 @@ import {
   Shield,
   Sparkles,
   Play,
+  FileCode,
+  Globe,
 } from 'lucide-react'
 import notify from '../common/StyledToast'
+import ResultActionsExtras from '../common/ResultActionsExtras'
+// Улучшатели#3 wave 2 #5 — shared syntax-highlighted code viewer.
+import CodeBlock from '../common/CodeBlock'
 import {
   getCodeVersions,
   getAudits,
@@ -39,12 +44,15 @@ import {
   downloadResultZip,
   createPullRequest,
   getEnhancementSuggestions,
+  runFinalCode,
   type CodeVersionResponse,
   type AuditResponse,
   type SummaryAuditResponse,
   type FinalResultResponse,
+  type ExecutionResult,
 } from '../../services/api'
 import type { EnhancementSuggestion } from '../../types'
+import { useFetchData } from '../../hooks/useFetchData'
 
 interface DetailPanelProps {
   nodeId: string
@@ -60,10 +68,18 @@ interface DetailPanelProps {
   specification?: string
   onClose: () => void
   onRunCodeVersion?: (versionId: string, title: string) => void
+  /** Улучшатели#3 wave 2 #2 — current node runtime status (error/timeout drives Retry affordance). */
+  nodeStatus?: string
+  /** Улучшатели#3 wave 2 #2 — invoked when the user clicks "Retry agent". */
+  onRetryAgent?: (agentType: string, agentIndex?: number) => void
+  /** VR-35 — run the finalized code from the Output node panel. */
+  onRunCode?: () => void
+  /** VR-35 — true while the code is currently executing (disables button + spinner). */
+  isRunningCode?: boolean
 }
 
 // Code viewer modal
-function CodeViewerModal({ 
+function CodeViewerModal({
   code, 
   title, 
   language,
@@ -75,12 +91,14 @@ function CodeViewerModal({
   onClose: () => void 
 }) {
   const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { clearTimeout(copyTimerRef.current) }, [])
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code)
     setCopied(true)
     notify.success('Copied to clipboard')
-    setTimeout(() => setCopied(false), 2000)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
   const handleDownload = () => {
@@ -102,13 +120,13 @@ function CodeViewerModal({
       aria-modal="true"
       aria-label={title}
       onClick={onClose}
-      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }}
     >
       <div 
         className="bg-gray-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+        <div className="p-4 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
           <h3 className="text-lg font-semibold text-white">{title}</h3>
           <div className="flex items-center gap-2">
             <button
@@ -126,14 +144,13 @@ function CodeViewerModal({
               Download
             </button>
             <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
-              <X className="w-5 h-5 text-gray-400" />
+              <X className="w-5 h-5 text-gray-300" />
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-auto p-4">
-          <pre className="bg-gray-900 p-4 rounded-lg text-sm text-gray-300 font-mono whitespace-pre-wrap overflow-x-auto">
-            {code}
-          </pre>
+        <div className="flex-1 overflow-auto p-4 min-h-0">
+          {/* Улучшатели#3 wave 2 #5 — syntax-highlighted via CodeBlock. */}
+          <CodeBlock code={code} language={language} maxHeightClass="max-h-full" showCopy={false} />
         </div>
       </div>
     </div>
@@ -149,13 +166,15 @@ function AuditViewerModal({
   onClose: () => void 
 }) {
   const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { clearTimeout(copyTimerRef.current) }, [])
   const content = 'audit_content' in audit ? audit.audit_content : audit.summary_content
 
   const handleCopy = () => {
     navigator.clipboard.writeText(content)
     setCopied(true)
     notify.success('Copied to clipboard')
-    setTimeout(() => setCopied(false), 2000)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
   const handleDownload = () => {
@@ -176,13 +195,13 @@ function AuditViewerModal({
       aria-modal="true"
       aria-label={`Audit iteration ${audit.iteration}`}
       onClick={onClose}
-      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }}
     >
       <div 
         className="bg-gray-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+        <div className="p-4 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
           <h3 className="text-lg font-semibold text-white">
             Audit - Iteration {audit.iteration}
           </h3>
@@ -202,11 +221,11 @@ function AuditViewerModal({
               Download
             </button>
             <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
-              <X className="w-5 h-5 text-gray-400" />
+              <X className="w-5 h-5 text-gray-300" />
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex-1 overflow-auto p-4 min-h-0">
           {'issues' in audit && audit.issues && (
             <div className="mb-4 p-3 bg-gray-700/50 rounded-lg">
               <div className="text-sm font-medium text-gray-300">
@@ -217,6 +236,113 @@ function AuditViewerModal({
           <pre className="bg-gray-900 p-4 rounded-lg text-sm text-gray-300 font-mono whitespace-pre-wrap overflow-x-auto">
             {content}
           </pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Diff viewer modal — side-by-side comparison of two code versions
+function DiffViewerModal({
+  previous,
+  current,
+  language,
+  onClose,
+}: {
+  previous: { code: string; label: string }
+  current: { code: string; label: string }
+  language: string
+  onClose: () => void
+}) {
+  const [activeTab, setActiveTab] = useState<'side-by-side' | 'previous' | 'current'>('side-by-side')
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Compare code versions"
+      onClick={onClose}
+      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }}
+    >
+      <div
+        className="bg-gray-800 rounded-xl w-full max-w-7xl max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+            <FileCode className="w-5 h-5 text-indigo-400" />
+            Compare Versions
+          </h3>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-gray-700 rounded-lg p-0.5">
+              {(['side-by-side', 'previous', 'current'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                    activeTab === tab
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:text-gray-200'
+                  }`}
+                >
+                  {tab === 'side-by-side' ? 'Side by Side' : tab === 'previous' ? 'Previous' : 'Current'}
+                </button>
+              ))}
+            </div>
+            <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
+              <X className="w-5 h-5 text-gray-300" />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto p-4 min-h-0">
+          {/* Улучшатели#3 wave 2 #5 — diff view uses CodeBlock with variant
+              tinting so the red/green columns keep their colour cues. */}
+          {activeTab === 'side-by-side' ? (
+            <div className="grid grid-cols-2 gap-3 h-full">
+              <div>
+                <div className="text-xs font-medium text-red-400 mb-2 flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-red-500" />
+                  {previous.label}
+                </div>
+                <CodeBlock
+                  code={previous.code}
+                  language={language}
+                  variant="previous"
+                  maxHeightClass="max-h-[70vh]"
+                />
+              </div>
+              <div>
+                <div className="text-xs font-medium text-green-400 mb-2 flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                  {current.label}
+                </div>
+                <CodeBlock
+                  code={current.code}
+                  language={language}
+                  variant="current"
+                  maxHeightClass="max-h-[70vh]"
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className={`text-xs font-medium mb-2 flex items-center gap-1 ${
+                activeTab === 'previous' ? 'text-red-400' : 'text-green-400'
+              }`}>
+                <span className={`inline-block w-2 h-2 rounded-full ${
+                  activeTab === 'previous' ? 'bg-red-500' : 'bg-green-500'
+                }`} />
+                {activeTab === 'previous' ? previous.label : current.label}
+              </div>
+              <CodeBlock
+                code={activeTab === 'previous' ? previous.code : current.code}
+                language={language}
+                variant={activeTab === 'previous' ? 'previous' : 'current'}
+                maxHeightClass="max-h-[75vh]"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -244,6 +370,7 @@ function CoderPanel({
   const [versions, setVersions] = useState<CodeVersionResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedVersion, setSelectedVersion] = useState<CodeVersionResponse | null>(null)
+  const [diffPair, setDiffPair] = useState<{ previous: CodeVersionResponse; current: CodeVersionResponse } | null>(null)
   const loadSeqRef = useRef(0)
 
   useEffect(() => {
@@ -304,46 +431,65 @@ function CoderPanel({
       </h4>
       
       {versions.length === 0 ? (
-        <div className="text-gray-500 text-sm">No code versions yet</div>
+        <div className="text-gray-400 text-sm">No code versions yet</div>
       ) : (
         <div className="space-y-2">
-          {versions.map((version) => (
-            <div 
-              key={version.id}
-              className="p-3 bg-gray-700/50 hover:bg-gray-700 rounded-lg cursor-pointer transition-colors border border-gray-600"
-              onClick={() => setSelectedVersion(version)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Code2 className="w-4 h-4 text-blue-400" />
-                  <span className="text-sm font-medium text-white">
-                    Iteration {version.iteration}
-                  </span>
+          {versions.map((version) => {
+            // Find the previous version (sorted by iteration ascending)
+            const sortedVersions = [...versions].sort((a, b) => a.iteration - b.iteration)
+            const sortedIdx = sortedVersions.findIndex(v => v.id === version.id)
+            const prevVersion = sortedIdx > 0 ? sortedVersions[sortedIdx - 1] : null
+
+            return (
+              <div
+                key={version.id}
+                className="p-3 bg-gray-700/50 hover:bg-gray-700 rounded-lg cursor-pointer transition-colors border border-gray-600"
+                onClick={() => setSelectedVersion(version)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Code2 className="w-4 h-4 text-blue-400" />
+                    <span className="text-sm font-medium text-white">
+                      Iteration {version.iteration}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-300">
+                      {version.code_content?.split('\n').length || 0} lines
+                    </span>
+                    {prevVersion && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setDiffPair({ previous: prevVersion, current: version })
+                        }}
+                        className="p-1 text-gray-300 hover:text-indigo-400 hover:bg-indigo-500/10 rounded transition-colors"
+                        title="Compare with previous iteration"
+                      >
+                        <FileCode className="w-4 h-4" />
+                      </button>
+                    )}
+                    {onRunCodeVersion && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRunCodeVersion(version.id, `Coder ${coderIndex + 1} — Iteration ${version.iteration}`)
+                        }}
+                        className="p-1 text-gray-300 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                        title="Run this code"
+                      >
+                        <Play className="w-4 h-4" />
+                      </button>
+                    )}
+                    <Eye className="w-4 h-4 text-gray-300" />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400">
-                    {version.code_content?.split('\n').length || 0} lines
-                  </span>
-                  {onRunCodeVersion && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onRunCodeVersion(version.id, `Coder ${coderIndex + 1} — Iteration ${version.iteration}`)
-                      }}
-                      className="p-1 text-gray-400 hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                      title="Run this code"
-                    >
-                      <Play className="w-4 h-4" />
-                    </button>
-                  )}
-                  <Eye className="w-4 h-4 text-gray-400" />
+                <div className="mt-1 text-xs text-gray-400">
+                  {new Date(version.created_at).toLocaleString()}
                 </div>
               </div>
-              <div className="mt-1 text-xs text-gray-500">
-                {new Date(version.created_at).toLocaleString()}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -353,6 +499,21 @@ function CoderPanel({
           title={`Coder ${coderIndex + 1} - Iteration ${selectedVersion.iteration}`}
           language={language}
           onClose={() => setSelectedVersion(null)}
+        />
+      )}
+
+      {diffPair && (
+        <DiffViewerModal
+          previous={{
+            code: diffPair.previous.code_content,
+            label: `Iteration ${diffPair.previous.iteration}`,
+          }}
+          current={{
+            code: diffPair.current.code_content,
+            label: `Iteration ${diffPair.current.iteration}`,
+          }}
+          language={language}
+          onClose={() => setDiffPair(null)}
         />
       )}
     </div>
@@ -416,12 +577,12 @@ function TesterPanel({
       </h4>
       
       {audits.length === 0 ? (
-        <div className="text-gray-500 text-sm">No audits yet</div>
+        <div className="text-gray-400 text-sm">No audits yet</div>
       ) : (
         <div className="space-y-4">
           {iterations.map((iteration) => (
             <div key={iteration}>
-              <div className="text-xs font-medium text-gray-400 mb-2">Iteration {iteration}</div>
+              <div className="text-xs font-medium text-gray-300 mb-2">Iteration {iteration}</div>
               <div className="space-y-2">
                 {groupedAudits[iteration].map((audit) => (
                   <div 
@@ -436,14 +597,14 @@ function TesterPanel({
                           {audit.issues?.length || 0} issues found
                         </span>
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-gray-400">
+                      <div className="flex items-center gap-3 text-xs text-gray-300">
                         <span>Spec: {audit.specification_compliance}/10</span>
                         <span>Corr: {audit.correctness}/10</span>
                         <span>Qual: {audit.quality}/10</span>
                       </div>
                     </div>
                     {audit.overall_assessment && (
-                      <div className="mt-1 text-xs text-gray-400 truncate">
+                      <div className="mt-1 text-xs text-gray-300 truncate">
                         {audit.overall_assessment}
                       </div>
                     )}
@@ -466,32 +627,18 @@ function TesterPanel({
 }
 
 // Summarizer panel - shows summary matrix
-function SummarizerPanel({ 
+function SummarizerPanel({
   sessionId,
-}: { 
+}: {
   sessionId: string
 }) {
-  const [summaries, setSummaries] = useState<SummaryAuditResponse[]>([])
-  const [loading, setLoading] = useState(true)
+  const { data: summariesData, loading } = useFetchData<SummaryAuditResponse[]>(
+    () => getSummaries(sessionId),
+    [sessionId],
+    { onError: (err) => console.error('Failed to load summaries:', err) }
+  )
+  const summaries = summariesData ?? []
   const [selectedSummary, setSelectedSummary] = useState<SummaryAuditResponse | null>(null)
-  const loadSeqRef = useRef(0)
-
-  useEffect(() => {
-    const seq = ++loadSeqRef.current
-    setLoading(true)
-    getSummaries(sessionId)
-      .then((data) => {
-        if (seq !== loadSeqRef.current) return
-        setSummaries(data)
-      })
-      .catch((err) => {
-        if (seq !== loadSeqRef.current) return
-        console.error('Failed to load summaries:', err)
-      })
-      .finally(() => {
-        if (seq === loadSeqRef.current) setLoading(false)
-      })
-  }, [sessionId])
 
   // Group by coder
   const byCoderAndIteration: Record<number, SummaryAuditResponse[]> = {}
@@ -525,12 +672,12 @@ function SummarizerPanel({
       </h4>
       
       {summaries.length === 0 ? (
-        <div className="text-gray-500 text-sm">No summaries yet</div>
+        <div className="text-gray-400 text-sm">No summaries yet</div>
       ) : (
         <div className="space-y-4">
           {coderIndices.map((coderIndex) => (
             <div key={coderIndex}>
-              <div className="text-xs font-medium text-gray-400 mb-2">Coder {coderIndex + 1}</div>
+              <div className="text-xs font-medium text-gray-300 mb-2">Coder {coderIndex + 1}</div>
               <div className="space-y-2">
                 {byCoderAndIteration[coderIndex].map((summary) => {
                   const totalIssues = 
@@ -567,7 +714,7 @@ function SummarizerPanel({
                         </div>
                       </div>
                       {summary.consensus_notes && (
-                        <div className="mt-1 text-xs text-gray-400 truncate">
+                        <div className="mt-1 text-xs text-gray-300 truncate">
                           {summary.consensus_notes}
                         </div>
                       )}
@@ -602,6 +749,8 @@ function FinalizerPanel({
   const [loading, setLoading] = useState(true)
   const [showCode, setShowCode] = useState(false)
   const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { clearTimeout(copyTimerRef.current) }, [])
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
   const [showPRModal, setShowPRModal] = useState(false)
   const [prToken, setPRToken] = useState('')
@@ -634,7 +783,7 @@ function FinalizerPanel({
         await navigator.clipboard.writeText(result.final_code)
         setCopied(true)
         notify.success('Copied to clipboard')
-        setTimeout(() => setCopied(false), 2000)
+        copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
       } catch {
         notify.error('Failed to copy to clipboard')
       }
@@ -672,6 +821,24 @@ function FinalizerPanel({
       URL.revokeObjectURL(url)
       notify.success('File downloaded')
     }
+  }
+
+  const handleExportHtml = () => {
+    if (!result?.final_code) return
+    const isHtml = result.final_code.trim().startsWith('<!DOCTYPE') || result.final_code.trim().startsWith('<html')
+    const html = isHtml ? result.final_code : `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>CodeForge Result</title>
+<style>body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:2rem;margin:0}
+pre{background:#16213e;padding:1.5rem;border-radius:8px;overflow-x:auto;line-height:1.5}</style>
+</head><body><h1>CodeForge Result</h1><pre>${result.final_code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre></body></html>`
+    const blob = new Blob([html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'codeforge-result.html'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    notify.success('HTML exported')
   }
 
   const handleCreatePR = async () => {
@@ -716,7 +883,7 @@ function FinalizerPanel({
 
   if (!result) {
     return (
-      <div className="text-gray-500 text-sm">No final result yet</div>
+      <div className="text-gray-400 text-sm">No final result yet</div>
     )
   }
 
@@ -742,15 +909,15 @@ function FinalizerPanel({
 
       <div className="mb-4 grid grid-cols-3 gap-3">
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Iterations</div>
+          <div className="text-xs text-gray-300">Iterations</div>
           <div className="text-lg font-semibold text-white">{result.total_iterations || 1}</div>
         </div>
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Tokens</div>
+          <div className="text-xs text-gray-300">Tokens</div>
           <div className="text-lg font-semibold text-white">{(result.total_tokens || 0).toLocaleString()}</div>
         </div>
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Cost</div>
+          <div className="text-xs text-gray-300">Cost</div>
           <div className="text-lg font-semibold text-white">${(result.total_cost_usd || 0).toFixed(4)}</div>
         </div>
       </div>
@@ -772,6 +939,13 @@ function FinalizerPanel({
           {downloadingZip ? <Loader2 className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
           Download ZIP
         </button>
+        <button
+          onClick={handleExportHtml}
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm transition-colors"
+        >
+          <Globe className="w-4 h-4" />
+          Export HTML
+        </button>
         {hasFileStructure && (
           <button
             onClick={() => setShowPRModal(!showPRModal)}
@@ -782,6 +956,8 @@ function FinalizerPanel({
           </button>
         )}
       </div>
+
+      <ResultActionsExtras sessionId={sessionId} language={language} />
 
       {/* PR Creation Modal */}
       {showPRModal && (
@@ -837,7 +1013,7 @@ function FinalizerPanel({
                   {prLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitBranch className="w-4 h-4" />}
                   {prLoading ? 'Creating PR...' : 'Create Pull Request'}
                 </button>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-gray-400">
                   Token needs <code>repo</code> scope. Never stored — used once for PR creation.
                 </p>
               </div>
@@ -852,7 +1028,7 @@ function FinalizerPanel({
           <div className="flex items-center gap-2 mb-2">
             <FolderOpen className="w-4 h-4 text-purple-400" />
             <span className="text-sm font-medium text-white">Modified Files</span>
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-gray-400">
               {modifiedCount > 0 && `${modifiedCount} modified`}
               {createdCount > 0 && `${modifiedCount > 0 ? ', ' : ''}${createdCount} created`}
               {deletedCount > 0 && `${(modifiedCount + createdCount) > 0 ? ', ' : ''}${deletedCount} deleted`}
@@ -883,8 +1059,8 @@ function FinalizerPanel({
                   </span>
                   {info.content && (
                     expandedFiles.has(path) ? 
-                      <ChevronDown className="w-3 h-3 text-gray-500 shrink-0" /> : 
-                      <ChevronRight className="w-3 h-3 text-gray-500 shrink-0" />
+                      <ChevronDown className="w-3 h-3 text-gray-400 shrink-0" /> : 
+                      <ChevronRight className="w-3 h-3 text-gray-400 shrink-0" />
                   )}
                 </button>
                 {expandedFiles.has(path) && info.content && (
@@ -907,16 +1083,21 @@ function FinalizerPanel({
           <div className="flex items-center gap-2">
             <Code2 className="w-4 h-4 text-green-400" />
             <span className="text-sm text-white">{hasFileStructure ? 'Combined Code' : 'Final Code'}</span>
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-gray-300">
               ({result.final_code?.split('\n').length || 0} lines)
             </span>
           </div>
           {showCode ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>
         {showCode && (
-          <pre className="mt-2 bg-gray-900 p-4 rounded-lg text-sm text-gray-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-96">
-            {result.final_code}
-          </pre>
+          /* Улучшатели#3 wave 2 #5 — syntax-highlighted code. */
+          <div className="mt-2">
+            <CodeBlock
+              code={result.final_code || ''}
+              language={language}
+              maxHeightClass="max-h-96"
+            />
+          </div>
         )}
       </div>
 
@@ -942,12 +1123,14 @@ function SpecificationPanel({
   specification: string
 }) {
   const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { clearTimeout(copyTimerRef.current) }, [])
 
   const handleCopy = () => {
     navigator.clipboard.writeText(specification)
     setCopied(true)
     notify.success('Copied to clipboard')
-    setTimeout(() => setCopied(false), 2000)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
   const handleDownload = () => {
@@ -992,17 +1175,109 @@ function SpecificationPanel({
   )
 }
 
+// REPLPreview - runs the final code via the existing execution endpoint
+// and shows stdout / stderr / exit_code / execution_time in a console-styled panel.
+// Useful especially for Python where we can't render the result in an iframe.
+function REPLPreview({ sessionId, language }: { sessionId: string; language: string }) {
+  const [output, setOutput] = useState<
+    | (Partial<ExecutionResult> & { error?: string })
+    | null
+  >(null)
+  const [running, setRunning] = useState(false)
+
+  const handleRun = async () => {
+    setRunning(true)
+    setOutput(null)
+    try {
+      const result = await runFinalCode(sessionId)
+      setOutput(result)
+    } catch (err) {
+      setOutput({ error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const isPython = language === 'python'
+
+  return (
+    <div className="mt-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Play className="w-4 h-4 text-green-400" />
+          <span className="text-sm font-medium text-gray-200">Run Output</span>
+          {isPython && (
+            <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 border border-green-500/30">
+              Python REPL
+            </span>
+          )}
+        </div>
+        <button
+          onClick={handleRun}
+          disabled={running}
+          className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-sm text-white transition-colors"
+        >
+          {running ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Running...
+            </>
+          ) : (
+            <>
+              <Play className="w-4 h-4" />
+              {/* КАО#VR-35 — disambiguate Run Code labels (REPL vs Final):
+                  this button feeds the inline stdout/stderr console below,
+                  the OutputPanel "Run Code" launches the full execution UI. */}
+              Run in REPL
+            </>
+          )}
+        </button>
+      </div>
+
+      {output && (
+        <div className="bg-black border border-green-700/60 rounded-lg p-4 font-mono text-sm">
+          {output.stdout && (
+            <pre className="text-green-400 whitespace-pre-wrap break-words">{output.stdout}</pre>
+          )}
+          {output.stderr && (
+            <pre className="text-red-400 whitespace-pre-wrap break-words">{output.stderr}</pre>
+          )}
+          {output.error && (
+            <pre className="text-red-400 whitespace-pre-wrap break-words">{output.error}</pre>
+          )}
+          {!output.stdout && !output.stderr && !output.error && (
+            <pre className="text-gray-500 italic">(no output)</pre>
+          )}
+          <div className="text-xs text-gray-400 mt-2 border-t border-gray-700 pt-2 flex flex-wrap gap-x-4 gap-y-1">
+            {output.exit_code !== undefined && <span>exit_code: <span className={output.exit_code === 0 ? 'text-green-400' : 'text-red-400'}>{output.exit_code}</span></span>}
+            {output.execution_time_ms !== undefined && <span>{output.execution_time_ms}ms</span>}
+            {output.success !== undefined && <span>success: {String(output.success)}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Output panel - shows final code result
-function OutputPanel({ 
+function OutputPanel({
   sessionId,
   language,
-}: { 
+  onRunCode,
+  isRunningCode,
+}: {
   sessionId: string
   language: string
+  /** VR-35 — invoked when the user clicks Run Code from inside the Final Code panel. */
+  onRunCode?: () => void
+  /** VR-35 — true while code is currently executing. */
+  isRunningCode?: boolean
 }) {
   const [result, setResult] = useState<FinalResultResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => () => { clearTimeout(copyTimerRef.current) }, [])
   const [showPRModal, setShowPRModal] = useState(false)
   const [prToken, setPRToken] = useState('')
   const [prBranch, setPRBranch] = useState('codeforge/improvements')
@@ -1033,7 +1308,7 @@ function OutputPanel({
         await navigator.clipboard.writeText(result.final_code)
         setCopied(true)
         notify.success('Copied to clipboard')
-        setTimeout(() => setCopied(false), 2000)
+        copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
       } catch {
         notify.error('Failed to copy to clipboard')
       }
@@ -1067,6 +1342,24 @@ function OutputPanel({
     }
   }
 
+  const handleExportHtml = () => {
+    if (!result?.final_code) return
+    const isHtml = result.final_code.trim().startsWith('<!DOCTYPE') || result.final_code.trim().startsWith('<html')
+    const html = isHtml ? result.final_code : `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>CodeForge Result</title>
+<style>body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:2rem;margin:0}
+pre{background:#16213e;padding:1.5rem;border-radius:8px;overflow-x:auto;line-height:1.5}</style>
+</head><body><h1>CodeForge Result</h1><pre>${result.final_code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre></body></html>`
+    const blob = new Blob([html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'codeforge-result.html'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    notify.success('HTML exported')
+  }
+
   const handleCreatePR = async () => {
     setPRLoading(true)
     try {
@@ -1096,7 +1389,7 @@ function OutputPanel({
 
   if (!result) {
     return (
-      <div className="text-gray-500 text-sm text-center py-8">
+      <div className="text-gray-400 text-sm text-center py-8">
         <Code2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
         <p>No final code yet</p>
         <p className="text-xs mt-1">Complete the workflow to see the result</p>
@@ -1113,51 +1406,89 @@ function OutputPanel({
             Final Code Ready
           </span>
         </div>
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-300">
           Selected from Coder {result.selected_coder_index + 1}
         </p>
       </div>
 
       <div className="mb-4 grid grid-cols-3 gap-3">
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Lines</div>
+          <div className="text-xs text-gray-300">Lines</div>
           <div className="text-lg font-semibold text-white">{result.final_code?.split('\n').length || 0}</div>
         </div>
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Tokens</div>
+          <div className="text-xs text-gray-300">Tokens</div>
           <div className="text-lg font-semibold text-white">{(result.total_tokens || 0).toLocaleString()}</div>
         </div>
         <div className="bg-gray-700/50 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Cost</div>
+          <div className="text-xs text-gray-300">Cost</div>
           <div className="text-lg font-semibold text-white">${(result.total_cost_usd || 0).toFixed(4)}</div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 mb-3">
+      {/* VR-35 — Run Code is the primary action on the Final Code panel.
+          Rendered above the secondary row so it stays visible and prominent
+          even on narrow side-panel widths where the lower row may wrap. */}
+      {onRunCode && (
+        <div className="mb-3">
+          <button
+            onClick={onRunCode}
+            disabled={isRunningCode}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-sm font-medium text-white transition-colors"
+          >
+            {isRunningCode ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Running…
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                {/* КАО#VR-35 — disambiguate Run Code labels (REPL vs Final):
+                    primary "Run Code" launches finalized execution via the
+                    parent's handleRunCode (full execution UI); the REPLPreview
+                    button below is labelled "Run in REPL" for inline output. */}
+                Run Code
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
         <button
           onClick={handleCopy}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
+          className="flex-1 min-w-[120px] flex items-center justify-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
         >
           {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
           {copied ? 'Copied' : 'Copy Code'}
         </button>
         <button
           onClick={handleDownload}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm transition-colors"
+          className="flex-1 min-w-[120px] flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm transition-colors"
         >
           <Archive className="w-4 h-4" />
           Download ZIP
         </button>
+        <button
+          onClick={handleExportHtml}
+          className="flex-1 min-w-[120px] flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm transition-colors"
+        >
+          <Globe className="w-4 h-4" />
+          Export HTML
+        </button>
         {hasFileStructure && (
           <button
             onClick={() => setShowPRModal(!showPRModal)}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm transition-colors"
+            className="flex-1 min-w-[120px] flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm transition-colors"
           >
             <GitBranch className="w-4 h-4" />
             Create PR
           </button>
         )}
       </div>
+
+      <ResultActionsExtras sessionId={sessionId} language={language} />
 
       {/* PR Creation Modal */}
       {showPRModal && (
@@ -1212,7 +1543,7 @@ function OutputPanel({
                 {prLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitBranch className="w-4 h-4" />}
                 {prLoading ? 'Creating PR...' : 'Create Pull Request'}
               </button>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-400">
                 Token needs <code>repo</code> scope. Never stored — used once for PR creation.
               </p>
             </div>
@@ -1239,14 +1570,14 @@ function OutputPanel({
                   ) : action === 'modified' ? (
                     <FileEdit className="w-4 h-4 text-yellow-400" />
                   ) : (
-                    <FileText className="w-4 h-4 text-gray-400" />
+                    <FileText className="w-4 h-4 text-gray-300" />
                   )}
                   <span className="text-gray-300 font-mono text-xs">{path}</span>
                   <span className={`ml-auto text-xs ${
                     action === 'created' ? 'text-green-400' :
                     action === 'deleted' ? 'text-red-400' :
                     action === 'modified' ? 'text-yellow-400' :
-                    'text-gray-500'
+                    'text-gray-400'
                   }`}>
                     {action}
                   </span>
@@ -1257,9 +1588,16 @@ function OutputPanel({
         </div>
       )}
 
-      <div className="bg-gray-900 p-4 rounded-lg text-sm text-gray-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-[50vh] overflow-y-auto">
-        {result.final_code}
-      </div>
+      {/* Улучшатели#3 wave 2 #5 — syntax-highlighted code. */}
+      <CodeBlock
+        code={result.final_code || ''}
+        language={language}
+        maxHeightClass="max-h-[50vh]"
+      />
+
+      {/* Live REPL preview - runs the final code and shows stdout/stderr.
+          Especially useful for Python where the iframe preview cannot help. */}
+      <REPLPreview sessionId={sessionId} language={language} />
 
       {result.readme_content && (
         <div className="mt-4">
@@ -1371,7 +1709,7 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
       .finally(() => setLoading(false))
   }, [sessionId, nodeType])
 
-  if (!meta) return <div className="text-gray-400 text-sm">Unknown enhancer type</div>
+  if (!meta) return <div className="text-gray-300 text-sm">Unknown enhancer type</div>
 
   const Icon = meta.icon
 
@@ -1379,7 +1717,7 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
     return (
       <div className="flex items-center justify-center py-8">
         <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
-        <span className="ml-2 text-sm text-gray-400">Loading results...</span>
+        <span className="ml-2 text-sm text-gray-300">Loading results...</span>
       </div>
     )
   }
@@ -1400,12 +1738,12 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
         <Icon className={`w-5 h-5 ${meta.color}`} />
         <div>
           <div className={`text-sm font-medium ${meta.color}`}>{meta.label}</div>
-          <div className="text-xs text-gray-500">{meta.description}</div>
+          <div className="text-xs text-gray-400">{meta.description}</div>
         </div>
       </div>
 
       {items.length === 0 ? (
-        <div className="text-gray-500 text-sm text-center py-8">No enhancement results yet</div>
+        <div className="text-gray-400 text-sm text-center py-8">No enhancement results yet</div>
       ) : (
         <div className="space-y-3">
           <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
@@ -1422,7 +1760,7 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
                   item.priority === 'critical' ? 'bg-red-500/20 text-red-400' :
                   item.priority === 'high' ? 'bg-orange-500/20 text-orange-400' :
                   item.priority === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                  'bg-gray-500/20 text-gray-400'
+                  'bg-gray-500/20 text-gray-300'
                 }`}>
                   {item.priority}
                 </span>
@@ -1435,7 +1773,7 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
                 </span>
               </div>
               <h5 className="text-sm font-medium text-white mb-1">{item.title}</h5>
-              <p className="text-xs text-gray-400 whitespace-pre-wrap">{item.description}</p>
+              <p className="text-xs text-gray-300 whitespace-pre-wrap">{item.description}</p>
               {item.implementation && (
                 <div className="mt-2">
                   <button
@@ -1451,7 +1789,7 @@ function EnhancerResultsPanel({ sessionId, nodeType }: { sessionId: string; node
                     Implementation details
                   </button>
                   {expanded.has(idx) && (
-                    <p className="mt-1 text-xs text-gray-400 whitespace-pre-wrap bg-gray-800/50 p-2 rounded">
+                    <p className="mt-1 text-xs text-gray-300 whitespace-pre-wrap bg-gray-800/50 p-2 rounded">
                       {item.implementation}
                     </p>
                   )}
@@ -1479,8 +1817,18 @@ export default function DetailPanel({
   specification,
   onClose,
   onRunCodeVersion,
+  nodeStatus,
+  onRetryAgent,
+  onRunCode,
+  isRunningCode,
 }: DetailPanelProps) {
   const isEnhancer = nodeType.startsWith('enhancer_')
+  // Улучшатели#3 wave 2 #2 — show a Retry affordance when the agent is in a
+  // recoverable failure state (error or timeout). Wire to parent handler.
+  const canRetryAgent =
+    !!onRetryAgent &&
+    (nodeStatus === 'error' || nodeStatus === 'timeout') &&
+    nodeType !== 'input' && nodeType !== 'output'
 
   return (
     <div className="w-[500px] bg-gray-800 border-l border-gray-700 flex flex-col h-full animate-slideIn">
@@ -1489,16 +1837,36 @@ export default function DetailPanel({
         <div>
           <h3 className="text-lg font-semibold text-white">{title}</h3>
           {llmModel && (
-            <p className="text-sm text-gray-400">{llmModel}</p>
+            <p className="text-sm text-gray-300">{llmModel}</p>
           )}
         </div>
         <button
           onClick={onClose}
           className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
         >
-          <X className="w-5 h-5 text-gray-400" />
+          <X className="w-5 h-5 text-gray-300" />
         </button>
       </div>
+
+      {/* Улучшатели#3 wave 2 #2 — retry-agent affordance for error/timeout. */}
+      {canRetryAgent && (
+        <div className="px-4 pt-3 pb-2 border-b border-gray-700 bg-amber-500/10">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-amber-300">
+              This agent finished with {nodeStatus === 'timeout' ? 'a timeout' : 'an error'}.
+            </span>
+            <button
+              type="button"
+              onClick={() => onRetryAgent && onRetryAgent(nodeType, agentIndex)}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-md transition-colors"
+              title="Retry this agent"
+            >
+              <span aria-hidden="true">↻</span>
+              Retry agent
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
@@ -1537,9 +1905,11 @@ export default function DetailPanel({
         )}
 
         {nodeType === 'output' && (
-          <OutputPanel 
+          <OutputPanel
             sessionId={sessionId}
             language={language}
+            onRunCode={onRunCode}
+            isRunningCode={isRunningCode}
           />
         )}
 

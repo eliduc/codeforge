@@ -1,24 +1,109 @@
 """xAI Grok LLM provider with Grok 4 and reasoning support."""
 
 import logging
+import re
 import time
 from typing import Any
 
 import httpx
 
 from app.llm.base import BaseLLMProvider, LLMError, LLMResponse
+from app.llm import registry as model_registry
 
 logger = logging.getLogger(__name__)
+
+
+# KAO#VR-32 — version-agnostic Grok model parser.
+# Matches: grok-4, grok-4-1, grok-4-0709, grok-4.1-fast-reasoning,
+# grok-3-mini, grok-code-fast-1, grok-5-pro, etc.
+# Minor version is 1-2 digits ONLY (so "grok-4-1" → 4.1 but
+# "grok-4-0709" → 4.0 with a date suffix, not 4.0709).
+_GROK_VERSION_RE = re.compile(r"grok[-_]?(\d+(?:\.\d+|-\d{1,2}(?=-|$))?)", re.IGNORECASE)
+_GROK_CODE_RE = re.compile(r"grok[-_]?code", re.IGNORECASE)
+# Any 4+ digit run anywhere in the name (e.g. -0709, -20251022) is a date.
+_DATED_SUFFIX_RE = re.compile(r"-\d{3,}(?:-|$)")
+
+
+def _parse_grok_model(name: str) -> tuple[float, str, int]:
+    """Parse a Grok model id into (version, tier, priority).
+
+    Returns:
+      version  — float (4.0, 4.1, 3.0, ...). "grok-4-1" → 4.1, "grok-4" → 4.0
+      tier     — "pro" | "mini" | "fast" | "code" | "vision" | "base"
+      priority — 0=stable, 1=preview, 3=exp, 4=dated (lower=better)
+
+    Examples:
+      grok-4-0709                 → (4.0, "base", 4)   # dated
+      grok-4-1                    → (4.1, "base", 0)
+      grok-4-1-fast-reasoning     → (4.1, "fast", 0)
+      grok-3-mini                 → (3.0, "mini", 0)
+      grok-code-fast-1            → (0.0, "code", 0)   # special-case code line
+      grok-5-pro                  → (5.0, "pro",  0)
+      grok-foobar                 → (0.0, "base", 0)
+    """
+    n = name.lower()
+
+    # grok-code-* is its own product line (not really versioned by number).
+    if _GROK_CODE_RE.search(n):
+        tier = "code"
+        # Try to extract a trailing version (grok-code-fast-1 → 1.0).
+        v_match = re.search(r"-(\d+(?:\.\d+)?)$", n)
+        version = float(v_match.group(1)) if v_match else 0.0
+        # Dated suffix detection still applies.
+        if _DATED_SUFFIX_RE.search(n):
+            priority = 4
+        elif "preview" in n:
+            priority = 1
+        elif "exp" in n or "experimental" in n:
+            priority = 3
+        else:
+            priority = 0
+        return (version, tier, priority)
+
+    v_match = _GROK_VERSION_RE.search(n)
+    if v_match:
+        raw = v_match.group(1).replace("-", ".")
+        try:
+            version = float(raw)
+        except ValueError:
+            version = 0.0
+    else:
+        version = 0.0
+
+    # Tier extraction — order matters (most specific first).
+    if "pro" in n:
+        tier = "pro"
+    elif "mini" in n:
+        tier = "mini"
+    elif "fast" in n:
+        tier = "fast"
+    elif "vision" in n:
+        tier = "vision"
+    else:
+        tier = "base"
+
+    # Priority.
+    if "preview" in n:
+        priority = 1
+    elif "-exp" in n or "experimental" in n:
+        priority = 3
+    elif _DATED_SUFFIX_RE.search(n):
+        priority = 4
+    else:
+        priority = 0
+    return (version, tier, priority)
 
 
 class GrokProvider(BaseLLMProvider):
     """xAI Grok API provider with Grok 4 and reasoning support."""
 
-    # Fallback models (latest first)
+    # KAO#VR-32 — replaced with version-agnostic _parse_grok_model().
+    # Last-resort fallback only used when both the live API fetch AND the
+    # models.dev registry are unreachable. Pure family names — no versions.
     CODE_MODELS = [
-        "grok-4-0709",
-        "grok-4-1-fast-reasoning",
-        "grok-code-fast-1",
+        "grok-pro",
+        "grok-code",
+        "grok-mini",
     ]
 
     # Pricing per 1M tokens (input, output)
@@ -40,10 +125,8 @@ class GrokProvider(BaseLLMProvider):
         "grok-2-vision-1212": (2.00, 10.00),
     }
 
-    # Reasoning models (have reasoning capabilities)
-    REASONING_MODELS = [
-        "grok-4", "grok-4-1", "grok-4-fast-reasoning", "grok-4-1-fast-reasoning"
-    ]
+    # KAO#VR-32 — REASONING_MODELS removed; _is_reasoning_model() uses
+    # _parse_grok_model() to detect any Grok 4+ family (version-agnostic).
 
     BASE_URL = "https://api.x.ai/v1"
 
@@ -51,7 +134,7 @@ class GrokProvider(BaseLLMProvider):
         super().__init__(api_key, base_url)
         self.base_url = base_url or self.BASE_URL
         self._fetched_models: list[str] | None = None
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=30.0))
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -68,22 +151,34 @@ class GrokProvider(BaseLLMProvider):
         return self.CODE_MODELS
 
     def _is_reasoning_model(self, model: str) -> bool:
-        """Check if model has reasoning capabilities."""
+        """Check if model has reasoning capabilities.
+
+        KAO#VR-32 — version-agnostic: Grok 4+ is reasoning unless the name
+        explicitly says "non-reasoning". Works for grok-4, grok-4-1,
+        grok-5-pro, etc.
+        """
         model_lower = model.lower()
-        # Grok 4 is always reasoning, fast variants specify reasoning/non-reasoning
-        if "grok-4" in model_lower:
-            # Non-reasoning variants explicitly marked
-            if "non-reasoning" in model_lower:
-                return False
-            return True
-        return False
+        if "non-reasoning" in model_lower:
+            return False
+        version, _tier, _priority = _parse_grok_model(model)
+        return version >= 4.0
 
     def _supports_reasoning_effort(self, model: str) -> bool:
         """Check if model supports reasoning_effort parameter.
 
-        Only grok-3-mini supports it. Grok 4 models do NOT — passing it causes an error.
+        KAO#VR-32 — Grok mini family (version >= 3). Grok 4 models do NOT
+        support reasoning_effort — passing it causes an error.
         """
-        return "grok-3-mini" in model.lower()
+        return self._supports_search(model)
+
+    def _supports_search(self, model: str) -> bool:
+        """Check if model supports live search (grok-N-mini, N>=3).
+
+        KAO#VR-32 — version-agnostic. Replaces the hardcoded
+        ``'grok-3-mini' in model.lower()`` check.
+        """
+        version, tier, _priority = _parse_grok_model(model)
+        return tier == "mini" and version >= 3.0
 
     # Max output tokens per model family
     MAX_OUTPUT_TOKENS: dict[str, int] = {
@@ -112,7 +207,14 @@ class GrokProvider(BaseLLMProvider):
         return caps
 
     async def is_available(self) -> bool:
-        """Check availability and fetch models from API."""
+        """Check availability and fetch models from API.
+
+        KAO#VR-32 — version-agnostic discovery. Parses each model id with
+        ``_parse_grok_model``, groups by ``(version, tier)`` keeping the
+        best-priority entry per slot, sorts by (newer version desc, tier
+        preference). No hardcoded family names — grok-5-pro, grok-4-2-fast,
+        etc. are picked up automatically.
+        """
         if not self.api_key:
             return False
         try:
@@ -125,95 +227,59 @@ class GrokProvider(BaseLLMProvider):
                     data = response.json()
                     models = data.get("data", [])
 
-                    # Classify models into families
-                    families: dict[str, tuple[dict, int]] = {}
+                    # Best per (version, tier, has_reasoning_qualifier).
+                    # has_reasoning_qualifier distinguishes
+                    # grok-4-fast-reasoning vs grok-4-fast-non-reasoning so
+                    # both show up if the API lists both.
+                    best: dict[tuple[float, str, str], tuple[dict, int]] = {}
 
                     for m in models:
                         model_id = m["id"]
                         model_lower = model_id.lower()
 
-                        # Skip non-text models
-                        if any(x in model_lower for x in ['embed', 'image', 'vision', 'audio', 'video']):
-                            # Allow vision models as they also do text
+                        # Skip non-text models. Vision is allowed (text + image).
+                        if any(x in model_lower for x in ['embed', 'image', 'audio', 'video']):
                             if 'vision' not in model_lower:
                                 continue
 
-                        # Determine family
-                        family = None
-
-                        # Grok 4.1 family (newest)
-                        if 'grok-4-1' in model_lower or 'grok-4.1' in model_lower:
-                            if 'fast-reasoning' in model_lower:
-                                family = "grok-4.1-fast-reasoning"
-                            elif 'fast-non-reasoning' in model_lower:
-                                family = "grok-4.1-fast-non-reasoning"
-                            elif 'fast' in model_lower:
-                                family = "grok-4.1-fast"
-                            else:
-                                family = "grok-4.1"
-                        # Grok 4 family
-                        elif 'grok-4' in model_lower:
-                            if 'fast-reasoning' in model_lower:
-                                family = "grok-4-fast-reasoning"
-                            elif 'fast-non-reasoning' in model_lower:
-                                family = "grok-4-fast-non-reasoning"
-                            elif 'fast' in model_lower:
-                                family = "grok-4-fast"
-                            else:
-                                family = "grok-4"
-                        # Grok Code
-                        elif 'grok-code' in model_lower:
-                            family = "grok-code"
-                        # Grok 3 family
-                        elif 'grok-3' in model_lower:
-                            if 'mini' in model_lower:
-                                family = "grok-3-mini"
-                            else:
-                                family = "grok-3"
-                        # Grok 2 family
-                        elif 'grok-2' in model_lower:
-                            if 'vision' in model_lower:
-                                family = "grok-2-vision"
-                            elif 'mini' in model_lower:
-                                family = "grok-2-mini"
-                            else:
-                                family = "grok-2"
-
-                        if not family:
-                            continue
-
-                        # Priority: latest (0) > clean name (1) > dated (2)
-                        if 'latest' in model_lower:
-                            priority = 0
-                        elif not any(c.isdigit() for c in model_id[-8:].replace('grok', '')):
-                            priority = 1
+                        version, tier, base_priority = _parse_grok_model(model_id)
+                        if version <= 0.0 and tier == "base":
+                            continue  # unrecognized
+                        # Reasoning-qualifier — distinguish reasoning vs non-reasoning fast variants.
+                        if "non-reasoning" in model_lower:
+                            qualifier = "non-reasoning"
+                        elif "reasoning" in model_lower:
+                            qualifier = "reasoning"
                         else:
-                            priority = 2
+                            qualifier = ""
 
-                        if family not in families or priority < families[family][1]:
-                            families[family] = (m, priority)
-                        elif priority == families[family][1]:
-                            if m.get("created", 0) > families[family][0].get("created", 0):
-                                families[family] = (m, priority)
+                        slot = (version, tier, qualifier)
 
-                    # Build result: Grok 4 first, then 3, then 2
-                    preferred_order = [
-                        # Grok 4.1 (newest)
-                        "grok-4.1", "grok-4.1-fast-reasoning", "grok-4.1-fast-non-reasoning",
-                        # Grok 4
-                        "grok-4", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning",
-                        # Grok Code
-                        "grok-code",
-                        # Grok 3
-                        "grok-3", "grok-3-mini",
-                        # Grok 2
-                        "grok-2", "grok-2-vision", "grok-2-mini",
-                    ]
+                        # Priority refinement: "latest" alias beats anything.
+                        if "latest" in model_lower:
+                            priority = -1
+                        else:
+                            priority = base_priority
 
-                    result = []
-                    for fam in preferred_order:
-                        if fam in families:
-                            result.append(families[fam][0]["id"])
+                        existing = best.get(slot)
+                        if existing is None or priority < existing[1]:
+                            best[slot] = (m, priority)
+                        elif priority == existing[1]:
+                            if m.get("created", 0) > existing[0].get("created", 0):
+                                best[slot] = (m, priority)
+
+                    # Sort: newest version first, then tier preference, then qualifier.
+                    tier_rank = {"base": 0, "pro": 1, "fast": 2, "code": 3, "mini": 4, "vision": 5}
+                    qualifier_rank = {"reasoning": 0, "": 1, "non-reasoning": 2}
+                    ordered = sorted(
+                        best.items(),
+                        key=lambda kv: (
+                            -kv[0][0],  # newer version first
+                            tier_rank.get(kv[0][1], 99),
+                            qualifier_rank.get(kv[0][2], 99),
+                        ),
+                    )
+                    result = [meta[0]["id"] for _slot, meta in ordered]
 
                     logger.info(f"Grok: found {len(result)} models: {result}")
                     self._fetched_models = result if result else self.CODE_MODELS
@@ -226,6 +292,22 @@ class GrokProvider(BaseLLMProvider):
             logger.warning(f"Grok models fetch failed: {e}")
             return False
 
+    async def get_pricing(self, model: str) -> tuple[float, float] | None:
+        """KAO#VR-32 — pricing lookup with registry fallback (xAI on models.dev)."""
+        if model in self.PRICING:
+            return self.PRICING[model]
+        try:
+            reg = await model_registry.get_pricing("xai", model)
+            if reg is not None:
+                return reg
+        except Exception:  # noqa: BLE001
+            pass
+        model_lower = model.lower()
+        for pid, costs in self.PRICING.items():
+            if model_lower.startswith(pid.lower()):
+                return costs
+        return None
+
     async def generate(
         self,
         prompt: str,
@@ -234,6 +316,8 @@ class GrokProvider(BaseLLMProvider):
         max_tokens: int = 4096,
         system_prompt: str | None = None,
         thinking_effort: str | None = None,
+        request_timeout: float | None = None,
+        request_json_mode: bool = False,
         **kwargs: Any,
     ) -> LLMResponse | LLMError:
         """Generate response using Grok."""
@@ -251,6 +335,11 @@ class GrokProvider(BaseLLMProvider):
                 "max_tokens": max_tokens,
             }
 
+            # Grok exposes an OpenAI-compatible response_format. The newer
+            # Grok 4.x models accept JSON object mode.
+            if request_json_mode:
+                request_body["response_format"] = {"type": "json_object"}
+
             # Grok 4 reasoning models don't use temperature
             if not self._is_reasoning_model(model):
                 request_body["temperature"] = temperature
@@ -262,13 +351,20 @@ class GrokProvider(BaseLLMProvider):
                 if effort:
                     request_body["reasoning_effort"] = effort
 
-            response = await self._client.post(
-                f"{self.base_url}/chat/completions",
-                headers={
+            # Per-request timeout override
+            post_kwargs: dict[str, Any] = {
+                "headers": {
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json=request_body,
+                "json": request_body,
+            }
+            if request_timeout is not None:
+                post_kwargs["timeout"] = httpx.Timeout(request_timeout, connect=30.0)
+
+            response = await self._client.post(
+                f"{self.base_url}/chat/completions",
+                **post_kwargs,
             )
 
             latency_ms = int((time.time() - start_time) * 1000)

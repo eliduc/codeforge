@@ -6,6 +6,44 @@ import { useAuthStore } from '../stores/authStore'
 
 type Step = 'email' | 'code' | 'not_allowed'
 
+// Улучшатели#1 P2·S — sanitize location.state.from to prevent open-redirect
+// via protocol-relative URLs ("//evil.com") or absolute URLs handed to
+// react-router's navigate(). Only same-origin paths starting with a single "/"
+// are accepted; anything else falls back silently to "/sessions".
+function safeFromPath(from?: unknown): string {
+  if (typeof from !== 'string') return '/sessions'
+  if (from.length === 0) return '/sessions'
+  // Must start with "/" but NOT "//" (protocol-relative).
+  if (!from.startsWith('/')) return '/sessions'
+  if (from.startsWith('//')) return '/sessions'
+  // Also reject backslash variants which some browsers normalise to "//".
+  if (from.startsWith('/\\') || from.startsWith('\\')) return '/sessions'
+  return from
+}
+
+// Улучшатели#1 P2·S — OTP error class-distinguish.
+// Classifies an error from verifyOTP() so we can decide whether to wipe the
+// 6-digit code (genuine 4xx "invalid/expired") or keep it (transient: network,
+// timeout, 5xx). The shared apiFetch helper only surfaces error.message, so we
+// match on well-known message fragments produced upstream.
+type OtpErrorClass = 'invalid_code' | 'transient'
+function classifyOtpError(err: unknown): OtpErrorClass {
+  if (!(err instanceof Error)) return 'invalid_code'
+  const msg = err.message || ''
+  // apiFetch timeout: "Request timeout after Xms: /api/..."
+  if (msg.startsWith('Request timeout')) return 'transient'
+  // fetch network failures: "Failed to fetch", "NetworkError when attempting...", "Load failed".
+  if (/failed to fetch/i.test(msg)) return 'transient'
+  if (/network\s*error/i.test(msg)) return 'transient'
+  if (/^load failed$/i.test(msg)) return 'transient'
+  // Fallback path in apiFetch when response.json() of an error body fails:
+  // "API error: 500", "API error: 502", "API error: 503", "API error: 504"
+  if (/^API error:\s*5\d{2}\b/.test(msg)) return 'transient'
+  // Everything else (including the backend's "Invalid or expired code...") is
+  // a real 4xx-style code rejection.
+  return 'invalid_code'
+}
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -19,12 +57,14 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [accessRequested, setAccessRequested] = useState(false)
+  // Улучшатели#1 P1·S — Resend Code cooldown
+  const [resendCooldown, setResendCooldown] = useState(0)
 
   const emailInputRef = useRef<HTMLInputElement>(null)
   const codeInputRefs = useRef<(HTMLInputElement | null)[]>([])
 
-  // Redirect from state or default
-  const from = (location.state as { from?: string })?.from || '/sessions'
+  // Redirect from state or default — Улучшатели#1 P2·S — sanitize against open-redirect
+  const from = safeFromPath((location.state as { from?: unknown })?.from)
 
   // If already authenticated, redirect immediately
   useEffect(() => {
@@ -45,6 +85,15 @@ export default function LoginPage() {
     emailInputRef.current?.focus()
   }, [])
 
+  // Улучшатели#1 P1·S — Resend Code cooldown countdown
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const interval = setInterval(() => {
+      setResendCooldown(prev => (prev <= 1 ? 0 : prev - 1))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [resendCooldown])
+
   async function handleRequestOTP(e: React.FormEvent) {
     e.preventDefault()
     if (!email.trim()) return
@@ -59,6 +108,8 @@ export default function LoginPage() {
       } else {
         setMessage(result.message)
         setStep('code')
+        // Улучшатели#1 P1·S — Resend Code cooldown
+        setResendCooldown(60)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send code')
@@ -80,9 +131,8 @@ export default function LoginPage() {
     }
   }
 
-  async function handleVerifyOTP(e?: React.FormEvent) {
-    e?.preventDefault()
-    const codeStr = code.join('')
+  // Улучшатели#1 P1·S — OTP duplicate verify logic — single source of truth
+  async function submitCode(codeStr: string) {
     if (codeStr.length !== 6) return
 
     setLoading(true)
@@ -92,13 +142,31 @@ export default function LoginPage() {
       login(result.access_token, result.user)
       navigate(from, { replace: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verification failed')
-      // Clear code inputs on error
-      setCode(Array(6).fill(''))
-      setTimeout(() => codeInputRefs.current[0]?.focus(), 100)
+      // Улучшатели#1 P2·S — OTP error class-distinguish: only wipe digits on a
+      // genuine code-rejection (invalid/expired/4xx). Transient errors leave
+      // the typed digits in place so the user can hit Resend or simply retry.
+      const cls = classifyOtpError(err)
+      if (cls === 'transient') {
+        setError(
+          err instanceof Error && err.message
+            ? `Couldn't reach the server — ${err.message}. Click Resend or try again.`
+            : "Couldn't reach the server. Click Resend or try again."
+        )
+        // Keep `code` state intact; do not refocus.
+      } else {
+        setError(err instanceof Error ? err.message : 'Verification failed')
+        // Clear code inputs on invalid/expired
+        setCode(Array(6).fill(''))
+        setTimeout(() => codeInputRefs.current[0]?.focus(), 100)
+      }
     } finally {
       setLoading(false)
     }
+  }
+
+  async function handleVerifyOTP(e?: React.FormEvent) {
+    e?.preventDefault()
+    await submitCode(code.join(''))
   }
 
   function handleCodeInput(index: number, value: string) {
@@ -115,12 +183,12 @@ export default function LoginPage() {
 
     // Auto-submit when all 6 digits entered
     if (value && index === 5 && newCode.every(d => d !== '')) {
-      setTimeout(() => {
-        const codeStr = newCode.join('')
-        if (codeStr.length === 6) {
-          handleVerifyOTP()
-        }
-      }, 100)
+      // Use newCode directly (not stale `code` state) to avoid closure issue
+      const codeStr = newCode.join('')
+      if (codeStr.length === 6) {
+        // Улучшатели#1 P1·S — OTP duplicate verify logic — share submitCode helper
+        setTimeout(() => { void submitCode(codeStr) }, 100)
+      }
     }
   }
 
@@ -152,6 +220,8 @@ export default function LoginPage() {
   }
 
   async function handleResend() {
+    // Улучшатели#1 P1·S — Resend Code cooldown — guard
+    if (resendCooldown > 0) return
     setLoading(true)
     setError(null)
     setMessage(null)
@@ -160,6 +230,8 @@ export default function LoginPage() {
       setMessage(result.message)
       setCode(Array(6).fill(''))
       setTimeout(() => codeInputRefs.current[0]?.focus(), 100)
+      // Улучшатели#1 P1·S — Resend Code cooldown — start 60s timer
+      setResendCooldown(60)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend code')
     } finally {
@@ -171,7 +243,8 @@ export default function LoginPage() {
     <div className="min-h-screen bg-cf-bg flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         {/* Logo */}
-        <div className="flex flex-col items-center mb-8">
+        {/* Улучшатели#1 P3·S — Logo aria-hidden — decorative icon */}
+        <div className="flex flex-col items-center mb-8" aria-hidden="true">
           <div className="w-14 h-14 bg-gradient-to-br from-cf-primary to-cf-secondary rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-indigo-500/20">
             <Code2 className="w-8 h-8 text-white" />
           </div>
@@ -181,6 +254,8 @@ export default function LoginPage() {
 
         {/* Card */}
         <div className="bg-cf-panel border border-cf-border rounded-xl p-6 shadow-xl">
+          {/* Улучшатели#1 P3·S — tighten live-region scope: keep region label but drop aria-live from whole form; inline alerts use role="alert" */}
+          <div role="region" aria-label="Login form">
           {step === 'email' && (
             <>
               <h2 className="text-lg font-semibold text-cf-text mb-1">Sign in</h2>
@@ -195,10 +270,14 @@ export default function LoginPage() {
                   </label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-cf-text-muted" />
+                    {/* Улучшатели#1 P1·S — Email autocomplete */}
                     <input
                       ref={emailInputRef}
                       id="email"
+                      name="email"
                       type="email"
+                      autoComplete="email"
+                      inputMode="email"
                       required
                       value={email}
                       onChange={e => setEmail(e.target.value)}
@@ -210,7 +289,7 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p className="text-red-400 text-sm mb-4">{error}</p>
+                  <p role="alert" className="text-red-400 text-sm mb-4">{error}</p>
                 )}
 
                 <button
@@ -244,15 +323,43 @@ export default function LoginPage() {
                 <p className="text-cf-text-muted text-sm mb-1">
                   The email <span className="text-cf-text font-medium">{email}</span>
                 </p>
-                <p className="text-cf-text-muted text-sm mb-6">
+                <p className="text-cf-text-muted text-sm mb-2">
                   is not in the allowed list.
                 </p>
+                {/* Улучшатели#1 P3·S — Not-allowed: set expectations + docs link */}
+                <p className="text-cf-text-muted text-xs mb-1">
+                  An admin will review your request within 1 business day.
+                </p>
+                <a
+                  href="https://docs.gotcode.ai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cf-text-muted hover:text-cf-text text-xs underline underline-offset-2 mb-5 transition-colors"
+                >
+                  Learn more →
+                </a>
 
                 {accessRequested ? (
-                  <div className="flex items-center gap-2 text-green-400 text-sm py-2.5">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Request sent to administrator
-                  </div>
+                  <>
+                    <div className="flex items-center gap-2 text-green-400 text-sm py-2.5">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Request sent to administrator
+                    </div>
+                    {/* Улучшатели#1 P1·S — Request access — use different email */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStep('email')
+                        setAccessRequested(false)
+                        setError(null)
+                        setEmail('')
+                        setTimeout(() => emailInputRef.current?.focus(), 50)
+                      }}
+                      className="text-indigo-700 dark:text-cf-primary hover:text-indigo-800 dark:hover:text-cf-primary/80 text-sm font-medium transition-colors mt-1"
+                    >
+                      ← Use a different email
+                    </button>
+                  </>
                 ) : (
                   <button
                     onClick={handleRequestAccess}
@@ -268,7 +375,7 @@ export default function LoginPage() {
                 )}
 
                 {error && (
-                  <p className="text-red-400 text-sm mt-3">{error}</p>
+                  <p role="alert" className="text-red-400 text-sm mt-3">{error}</p>
                 )}
               </div>
             </>
@@ -295,24 +402,29 @@ export default function LoginPage() {
 
               <form onSubmit={handleVerifyOTP}>
                 <div className="flex gap-2 justify-center mb-4" onPaste={handleCodePaste}>
+                  {/* Улучшатели#1 P1·S — OTP a11y + autofill; P3·S — h-13 bug fix (h-12) */}
                   {code.map((digit, i) => (
                     <input
                       key={i}
                       ref={el => { codeInputRefs.current[i] = el }}
                       type="text"
+                      name={`otp-${i + 1}`}
+                      aria-label={`Digit ${i + 1} of 6`}
+                      autoComplete={i === 0 ? 'one-time-code' : 'off'}
                       inputMode="numeric"
+                      pattern="[0-9]*"
                       maxLength={1}
                       value={digit}
                       onChange={e => handleCodeInput(i, e.target.value)}
                       onKeyDown={e => handleCodeKeyDown(i, e)}
-                      className="w-11 h-13 text-center text-xl font-bold bg-cf-bg border border-cf-border rounded-lg text-cf-text focus:outline-none focus:ring-2 focus:ring-cf-primary focus:border-transparent transition-all"
+                      className="w-11 h-12 text-center text-xl font-bold bg-cf-bg border border-cf-border rounded-lg text-cf-text focus:outline-none focus:ring-2 focus:ring-cf-primary focus:border-transparent transition-all"
                       disabled={loading}
                     />
                   ))}
                 </div>
 
                 {error && (
-                  <p className="text-red-400 text-sm mb-4 text-center">{error}</p>
+                  <p role="alert" className="text-red-400 text-sm mb-4 text-center">{error}</p>
                 )}
 
                 <button
@@ -329,16 +441,18 @@ export default function LoginPage() {
               </form>
 
               <div className="mt-4 text-center">
+                {/* Улучшатели#1 P1·S — Resend Code cooldown */}
                 <button
                   onClick={handleResend}
-                  disabled={loading}
-                  className="text-cf-primary hover:text-cf-primary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                  disabled={loading || resendCooldown > 0}
+                  className="text-indigo-700 dark:text-cf-primary hover:text-indigo-800 dark:hover:text-cf-primary/80 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Resend Code
+                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend Code'}
                 </button>
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
     </div>

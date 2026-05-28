@@ -1,25 +1,211 @@
 """
 Code and audit retrieval API routes.
 """
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy import func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import get_current_user_id, require_auth
 from app.db.database import get_db
 from app.db.models import (
     Session, CodeVersion, Audit, SummaryAudit, CoderResponse,
-    FinalResult, LLMRequest, Intervention
+    FinalResult, LLMRequest, Intervention, SessionStatus,
 )
 from app.schemas import (
     CodeVersionResponse, AuditResponse, SummaryAuditResponse,
     CoderResponseResponse, FinalResultResponse, LLMRequestResponse,
-    InterventionCreate, InterventionResponse, SessionMetrics
+    InterventionCreate, InterventionResponse, SessionMetrics, CostAlert,
 )
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenancy helpers (mirror the ones in routes/sessions.py)
+# ---------------------------------------------------------------------------
+
+async def _verify_session_ownership(
+    db: AsyncSession,
+    session_id: UUID,
+    current_user_id: str | None,
+) -> None:
+    """Raise 404 if session doesn't exist OR isn't owned by current user.
+
+    For API-key / dev-mode (current_user_id is None) the ownership check is
+    skipped — only the existence check applies.
+
+    Returning 404 (not 403) avoids leaking the existence of other users'
+    sessions.
+    """
+    stmt = select(Session.id).where(Session.id == session_id)
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _session_user_filter(current_user_id: str | None):
+    """Build a SQL fragment to restrict LLMRequest/etc by parent session ownership.
+
+    Returns a `Session.id.in_(<subquery>)` clause when a user is in scope,
+    otherwise None (caller should skip filtering).
+    """
+    if current_user_id is None:
+        return None
+    return select(Session.id).where(Session.user_id == current_user_id)
+
+
+# ============================================================================
+# Aggregate dashboard metrics across all sessions
+# ============================================================================
+@router.get("/dashboard/stats")
+async def get_dashboard_stats(
+    days: int = Query(default=30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
+):
+    """Aggregate stats across all sessions for the dashboard.
+
+    Multi-tenancy: when JWT-authenticated, only the current user's sessions
+    are included in the totals. API-key / dev-mode sees everything.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    current_user_id = get_current_user_id(auth)
+    user_session_ids = _session_user_filter(current_user_id)  # subquery or None
+
+    # Sessions by status
+    status_stmt = (
+        select(Session.status, sa_func.count())
+        .where(Session.created_at >= cutoff)
+        .group_by(Session.status)
+    )
+    if current_user_id is not None:
+        status_stmt = status_stmt.where(Session.user_id == current_user_id)
+    status_query = await db.execute(status_stmt)
+    sessions_by_status: dict[str, int] = {}
+    for row in status_query.all():
+        key = row[0].value if hasattr(row[0], "value") else str(row[0])
+        sessions_by_status[key] = int(row[1])
+
+    # Total cost & tokens in window (filter by user via parent session)
+    cost_stmt = select(
+        sa_func.coalesce(sa_func.sum(LLMRequest.cost_usd), 0),
+        sa_func.coalesce(
+            sa_func.sum(LLMRequest.input_tokens + LLMRequest.output_tokens), 0
+        ),
+        sa_func.count(),
+    ).where(LLMRequest.created_at >= cutoff)
+    if user_session_ids is not None:
+        cost_stmt = cost_stmt.where(LLMRequest.session_id.in_(user_session_ids))
+    cost_query = await db.execute(cost_stmt)
+    cost_row = cost_query.one()
+    total_cost = float(cost_row[0] or 0)
+    total_tokens = int(cost_row[1] or 0)
+    total_requests = int(cost_row[2] or 0)
+
+    # Average iterations (completed sessions only)
+    avg_stmt = (
+        select(sa_func.coalesce(sa_func.avg(Session.current_iteration), 0))
+        .where(
+            Session.created_at >= cutoff,
+            Session.status == SessionStatus.COMPLETED,
+        )
+    )
+    if current_user_id is not None:
+        avg_stmt = avg_stmt.where(Session.user_id == current_user_id)
+    avg_iter_query = await db.execute(avg_stmt)
+    avg_iterations = float(avg_iter_query.scalar() or 0)
+
+    # Top providers by request count
+    providers_stmt = (
+        select(
+            LLMRequest.llm_provider,
+            sa_func.count(),
+            sa_func.sum(LLMRequest.cost_usd),
+        )
+        .where(LLMRequest.created_at >= cutoff)
+        .group_by(LLMRequest.llm_provider)
+        .order_by(sa_func.count().desc())
+        .limit(10)
+    )
+    if user_session_ids is not None:
+        providers_stmt = providers_stmt.where(LLMRequest.session_id.in_(user_session_ids))
+    providers_query = await db.execute(providers_stmt)
+    top_providers = [
+        {
+            "provider": row[0],
+            "requests": int(row[1]),
+            "cost_usd": float(row[2] or 0),
+        }
+        for row in providers_query.all()
+    ]
+
+    # Top models by cost
+    models_stmt = (
+        select(
+            LLMRequest.llm_model,
+            sa_func.count(),
+            sa_func.sum(LLMRequest.cost_usd),
+        )
+        .where(LLMRequest.created_at >= cutoff)
+        .group_by(LLMRequest.llm_model)
+        .order_by(sa_func.sum(LLMRequest.cost_usd).desc().nullslast())
+        .limit(10)
+    )
+    if user_session_ids is not None:
+        models_stmt = models_stmt.where(LLMRequest.session_id.in_(user_session_ids))
+    models_query = await db.execute(models_stmt)
+    top_models = [
+        {
+            "model": row[0],
+            "requests": int(row[1]),
+            "cost_usd": float(row[2] or 0),
+        }
+        for row in models_query.all()
+    ]
+
+    # Daily cost breakdown (last 14 days)
+    daily_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    daily_stmt = (
+        select(
+            sa_func.date_trunc("day", LLMRequest.created_at).label("day"),
+            sa_func.sum(LLMRequest.cost_usd),
+            sa_func.count(),
+        )
+        .where(LLMRequest.created_at >= daily_cutoff)
+        .group_by("day")
+        .order_by("day")
+    )
+    if user_session_ids is not None:
+        daily_stmt = daily_stmt.where(LLMRequest.session_id.in_(user_session_ids))
+    daily_query = await db.execute(daily_stmt)
+    daily_cost = [
+        {
+            "date": row[0].isoformat() if row[0] else None,
+            "cost_usd": float(row[1] or 0),
+            "requests": int(row[2]),
+        }
+        for row in daily_query.all()
+        if row[0] is not None
+    ]
+
+    return {
+        "window_days": days,
+        "sessions_by_status": sessions_by_status,
+        "total_cost_usd": total_cost,
+        "total_tokens": total_tokens,
+        "total_requests": total_requests,
+        "avg_iterations": round(avg_iterations, 2),
+        "top_providers": top_providers,
+        "top_models": top_models,
+        "daily_cost": daily_cost,
+    }
 
 
 # Code versions
@@ -31,8 +217,10 @@ async def list_code_versions(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List code versions for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(CodeVersion).where(CodeVersion.session_id == session_id)
 
     if iteration is not None:
@@ -53,9 +241,18 @@ async def list_code_versions(
 async def get_code_version(
     version_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Get a specific code version."""
-    stmt = select(CodeVersion).where(CodeVersion.id == version_id)
+    current_user_id = get_current_user_id(auth)
+    # Join through Session to enforce ownership
+    stmt = (
+        select(CodeVersion)
+        .join(Session, Session.id == CodeVersion.session_id)
+        .where(CodeVersion.id == version_id)
+    )
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
     result = await db.execute(stmt)
     version = result.scalar_one_or_none()
 
@@ -75,8 +272,10 @@ async def list_audits(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List audits for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     # Build query based on whether coder_index filter is needed
     if coder_index is not None:
         stmt = select(Audit).join(
@@ -104,9 +303,17 @@ async def list_audits(
 async def get_audit(
     audit_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Get a specific audit."""
-    stmt = select(Audit).where(Audit.id == audit_id)
+    current_user_id = get_current_user_id(auth)
+    stmt = (
+        select(Audit)
+        .join(Session, Session.id == Audit.session_id)
+        .where(Audit.id == audit_id)
+    )
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
     result = await db.execute(stmt)
     audit = result.scalar_one_or_none()
 
@@ -125,8 +332,10 @@ async def list_summary_audits(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List summary audits for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(SummaryAudit).where(SummaryAudit.session_id == session_id)
 
     if iteration is not None:
@@ -152,8 +361,10 @@ async def list_coder_responses(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List coder responses for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(CoderResponse).where(CoderResponse.session_id == session_id)
 
     if iteration is not None:
@@ -175,8 +386,10 @@ async def list_coder_responses(
 async def get_final_result(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Get the final result for a session. Returns null if not yet available."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(FinalResult).where(FinalResult.session_id == session_id)
     result = await db.execute(stmt)
     final = result.scalar_one_or_none()
@@ -191,8 +404,10 @@ async def list_llm_requests(
     iteration: Optional[int] = None,
     limit: int = Query(default=100, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List LLM requests for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(LLMRequest).where(LLMRequest.session_id == session_id)
 
     if iteration is not None:
@@ -211,8 +426,10 @@ async def list_llm_requests(
 async def get_session_metrics(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Get aggregated metrics for a session using SQL aggregation."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     base_filter = LLMRequest.session_id == session_id
 
     # Totals via SQL aggregation (avoids loading all rows into memory)
@@ -249,7 +466,8 @@ async def get_session_metrics(
 
     by_agent = {}
     for row in agent_rows:
-        key = f"{row.agent_type.value}_{row.agent_index or 0}"
+        agent_type = row.agent_type.value if hasattr(row.agent_type, 'value') else str(row.agent_type)
+        key = f"{agent_type}_{row.agent_index or 0}"
         by_agent[key] = {
             "requests": row.requests,
             "input_tokens": row.input_tokens or 0,
@@ -277,6 +495,30 @@ async def get_session_metrics(
             "cost_usd": float(row.cost_usd or 0),
         }
 
+    # Compute cost budget alert based on total cost
+    cost_alert: CostAlert | None = None
+    if total_cost > 50.0:
+        cost_alert = CostAlert(
+            cost_usd=total_cost,
+            threshold_usd=50.0,
+            severity="critical",
+            message="Session cost exceeds $50 — consider stopping",
+        )
+    elif total_cost > 10.0:
+        cost_alert = CostAlert(
+            cost_usd=total_cost,
+            threshold_usd=10.0,
+            severity="warning",
+            message="Session cost exceeds $10",
+        )
+    elif total_cost > 5.0:
+        cost_alert = CostAlert(
+            cost_usd=total_cost,
+            threshold_usd=5.0,
+            severity="info",
+            message="Session cost exceeds $5",
+        )
+
     return SessionMetrics(
         session_id=session_id,
         total_tokens_input=total_input,
@@ -288,6 +530,7 @@ async def get_session_metrics(
         iterations_completed=iterations,
         by_agent=by_agent,
         by_provider=by_provider,
+        cost_alert=cost_alert,
     )
 
 
@@ -296,8 +539,10 @@ async def get_session_metrics(
 async def list_interventions(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """List interventions for a session."""
+    await _verify_session_ownership(db, session_id, get_current_user_id(auth))
     stmt = select(Intervention).where(
         Intervention.session_id == session_id
     ).order_by(Intervention.created_at.desc())
@@ -313,10 +558,14 @@ async def create_intervention(
     session_id: UUID,
     intervention_data: InterventionCreate,
     db: AsyncSession = Depends(get_db),
+    auth: dict | None = Depends(require_auth),
 ):
     """Create an intervention for a session."""
-    # Verify session exists
+    current_user_id = get_current_user_id(auth)
+    # Verify session exists AND is owned by current user
     stmt = select(Session).where(Session.id == session_id)
+    if current_user_id is not None:
+        stmt = stmt.where(Session.user_id == current_user_id)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
 

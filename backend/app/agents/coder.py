@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.agents.base import AgentResult, BaseAgent
@@ -23,6 +24,15 @@ DEFAULT_CODER_PROMPT = """You are an expert software developer. Your task is to 
 ```{{ language }}
 {{ initial_code }}
 ```
+
+**CRITICAL: NON-DEGRADATION RULE**
+The existing code above is a WORKING, TESTED implementation. When improving it:
+1. **PRESERVE** all existing functionality — every feature that works must continue to work
+2. **PRESERVE** output quality — do NOT simplify, reduce, or downgrade any aspect of the existing behavior or output
+3. **INCREMENTAL changes only** — modify only the parts related to requested enhancements
+4. **DO NOT rewrite from scratch** — build upon the existing code structure
+5. If an enhancement conflicts with existing quality, implement it WITHOUT degrading what already works
+6. The improved code must be a strict superset of the original functionality
 {% endif %}
 
 {% if initial_docs %}
@@ -74,6 +84,29 @@ The following issues were found in your code by multiple code reviewers:
 {{ audit_summary.consensus_notes or 'N/A' }}
 {% endif %}
 
+{% if execution_error %}
+## EXECUTION ERROR FROM PREVIOUS ITERATION
+Your previous code failed to execute in the sandbox. You MUST fix this error
+in addition to addressing the audit findings above.
+
+Exit code: {{ execution_error.exit_code }}
+{% if execution_error.stderr %}
+Error output:
+```
+{{ execution_error.stderr }}
+```
+{% endif %}
+{% if execution_error.stdout %}
+Standard output before crash:
+```
+{{ execution_error.stdout }}
+```
+{% endif %}
+{% if execution_error.timeout_exceeded %}
+NOTE: The program exceeded the timeout limit.
+{% endif %}
+{% endif %}
+
 {% if intervention %}
 ## USER INTERVENTION
 The user has provided additional guidance:
@@ -95,6 +128,56 @@ The code will run in a web browser, NOT in Node.js. You MUST:
 **CDN Library Versions (IMPORTANT):**
 - Three.js: use `<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>` (versions after 0.160 removed the UMD build)
 - For any CDN library, use the global/UMD build loaded via `<script>` tag, NOT ES module imports
+
+**Visual first-impression rule (КАО#VR-24 — IMPORTANT for visual specs):**
+Your page WILL be screenshot-captured by an automated headless browser at
+0.5s, 2s, 5s, 8s, 12s after page load — there is NO human to click anything.
+Within the FIRST ~500ms the page MUST already show something visually
+representative of what the program does (not a blank canvas, not just an
+intro/menu/config screen, not just a "Press Start" splash).
+
+Acceptable ways to satisfy this rule:
+1. Initialize with a meaningful default state (random sample data, a glider
+   for Game of Life, a textbook fractal seed, a demo song bar, etc.) and
+   auto-start any animation / simulation loop on `DOMContentLoaded`.
+2. If you also offer a Start/Pause button, the button toggles the *running*
+   state — the demo MUST already be running on first paint. Reset/Clear
+   wipes the demo, but the page on first load starts WITH the demo, not
+   without it.
+3. If you have a configuration UI, render a live preview pane that updates
+   from default settings immediately, alongside the controls.
+
+Avoid: gating the entire visual on a "Choose a pattern → press Play" flow.
+That produces all-identical screenshots and torpedoes the visual review.
+
+**Notification & worker robustness rule (КАО#VR-42 — IMPORTANT):**
+The screenshot capture also picks up ANY toasts / notifications / banners you
+emit at runtime. A flood of identical error messages stacked on top of the
+canvas will dominate the frame and tank the visual review score, even if
+the underlying simulation is correct. Therefore:
+
+1. **Dedupe identical notifications.** Keep a small `recentToasts` Map keyed
+   by the message text. If the SAME text has been shown in the last 5
+   seconds, silently drop the new one. Reset the entry on its own timeout.
+
+2. **Throttle error toasts to at most one per second**, with a small running
+   counter (e.g. "Worker error ×7"). One persistent banner beats a tower of
+   identical popups every time.
+
+3. **Web Workers must degrade gracefully.** If you use a Worker:
+   - Wrap `worker.onerror` and `worker.onmessageerror` in a try/catch.
+   - Keep a `workerErrorCount`. After 3 consecutive failures, terminate the
+     worker, set a flag, and **fall back to a main-thread implementation of
+     the same computation** (Game of Life ticks, image filters, audio FFT
+     etc. all have trivial single-threaded variants). The user must still
+     see the simulation running.
+   - When using blob URLs for inline workers, validate the blob loaded
+     successfully (`worker.onerror` fires synchronously on parse errors —
+     handle it before the first `postMessage`).
+   - Never let a failing Worker spam errors on every animation frame.
+
+4. **`window.onerror` / `window.onunhandledrejection`** — install handlers
+   that silently log to console instead of leaking exceptions to the UI.
 {% endif %}
 {% if language in ['javascript', 'typescript'] %}
 **IMPORTANT: Node.js Environment**
@@ -201,7 +284,12 @@ Fix the code so it executes successfully without errors. Focus on:
 3. Implementing a proper fix
 4. Ensuring the code still meets the specification
 
-DO NOT change the core logic unless necessary to fix the error.
+**CRITICAL: DO NOT DEGRADE THE CODE**
+- DO NOT change the core logic unless necessary to fix the error
+- DO NOT simplify, reduce output quality, or remove working functionality
+- DO NOT remove features that work correctly just to avoid the error
+- Fix ONLY the specific error — make the MINIMAL change needed
+- If the error is a timeout, optimize performance without reducing output quality or removing features
 
 {% if language in ['javascript_browser', 'typescript_browser', 'html'] %}
 Note: This code runs in a browser environment (validated in headless Chromium). Do not use Node.js APIs.
@@ -287,6 +375,26 @@ The following issues were found in your modifications by multiple code reviewers
 
 ### Consensus Notes
 {{ audit_summary.consensus_notes or 'N/A' }}
+{% endif %}
+
+{% if execution_error %}
+## EXECUTION ERROR FROM PREVIOUS ITERATION
+Your previous modifications failed to execute. Fix this error along with
+the audit findings above.
+
+Exit code: {{ execution_error.exit_code }}
+{% if execution_error.stderr %}
+Error output:
+```
+{{ execution_error.stderr }}
+```
+{% endif %}
+{% if execution_error.stdout %}
+Standard output before crash:
+```
+{{ execution_error.stdout }}
+```
+{% endif %}
 {% endif %}
 
 {% if intervention %}
@@ -399,13 +507,49 @@ class CoderAgent(BaseAgent):
         intervention: str | None = None,
         repo_mode: bool = False,
         previous_files: dict[str, str] | None = None,
+        execution_error: dict[str, Any] | None = None,
+        temperature_override: float | None = None,
+        max_tokens_override: int | None = None,
+        enable_streaming: bool = False,
+        on_stream_chunk: Callable[[str], Awaitable[None]] | None = None,
     ) -> AgentResult:
         """Generate or improve code based on specification and feedback.
 
         Args:
             repo_mode: If True, use multi-file repo modification prompt.
             previous_files: For repo_mode iterations > 1, the previous file modifications.
+            execution_error: Optional dict with keys exit_code, stdout, stderr,
+                timeout_exceeded — passed to the prompt for iteration > 1 when
+                the previous run failed sandbox execution.
+            temperature_override: If provided, used for this call instead of
+                ``self.temperature`` (no agent state mutation).
+            max_tokens_override: If provided, used for this call instead of
+                ``self.max_tokens``. Subject to repo_mode minimum.
+            enable_streaming: When True and ``on_stream_chunk`` is provided,
+                use the LLM provider's streaming API and invoke the callback
+                for each text delta. Falls back to non-streaming if the
+                provider does not support streaming. PoC feature flag —
+                gated by ``session.settings.streaming = true`` upstream.
+            on_stream_chunk: Async callback ``(chunk: str) -> None`` invoked
+                for each streamed text delta. Ignored unless
+                ``enable_streaming`` is True.
         """
+        # Truncate execution error stdout/stderr for prompt sanity
+        safe_exec_error: dict[str, Any] | None = None
+        if execution_error:
+            stdout = execution_error.get("stdout") or ""
+            stderr = execution_error.get("stderr") or ""
+            if stdout and len(stdout) > 5000:
+                stdout = stdout[:5000] + f"\n[... truncated from {len(execution_error.get('stdout') or '')} chars ...]"
+            if stderr and len(stderr) > 5000:
+                stderr = stderr[:5000] + f"\n[... truncated from {len(execution_error.get('stderr') or '')} chars ...]"
+            safe_exec_error = {
+                "exit_code": execution_error.get("exit_code"),
+                "stdout": stdout,
+                "stderr": stderr,
+                "timeout_exceeded": execution_error.get("timeout_exceeded", False),
+            }
+
         if repo_mode:
             env = self._get_jinja_env()
             template = env.from_string(REPO_MODIFICATION_PROMPT)
@@ -416,6 +560,7 @@ class CoderAgent(BaseAgent):
                 previous_files=previous_files,
                 audit_summary=audit_summary,
                 intervention=intervention,
+                execution_error=safe_exec_error,
             )
         else:
             # Render prompt
@@ -428,6 +573,7 @@ class CoderAgent(BaseAgent):
                 previous_code=previous_code,
                 audit_summary=audit_summary,
                 intervention=intervention,
+                execution_error=safe_exec_error,
             )
 
         # Map language to display name for system prompt
@@ -444,14 +590,47 @@ class CoderAgent(BaseAgent):
             f"You write clean, efficient, and well-documented code. "
             f"You carefully analyze requirements and produce production-quality implementations."
         )
+        if initial_code:
+            system_prompt += (
+                " You are enhancing existing working code. Your #1 priority is to NEVER degrade "
+                "existing functionality or output quality. Make incremental improvements only."
+            )
 
         # Use higher max_tokens for repo mode since full files are larger
-        effective_max_tokens = self.max_tokens
-        if repo_mode and effective_max_tokens < 65536:
-            effective_max_tokens = 65536
+        # Caller-supplied override takes precedence, but repo mode floor still applies.
+        # КАО#VR-29 — repo-mode floor raised 65536 → 131072 to match the new
+        # default coder budget. Multi-file repos can easily exceed 65k tokens.
+        effective_max_tokens = max_tokens_override if max_tokens_override is not None else self.max_tokens
+        if repo_mode and effective_max_tokens < 131072:
+            effective_max_tokens = 131072
 
-        # Call LLM (pass max_tokens override to avoid mutating shared state)
-        response = await self._call_llm(prompt, system_prompt, max_tokens=effective_max_tokens)
+        # Call LLM (pass overrides to avoid mutating shared agent state — safe for
+        # adaptive per-iteration temperature/max_tokens tuning by the orchestrator)
+        if enable_streaming and on_stream_chunk is not None:
+            # PoC streaming path. Falls back automatically to non-streaming
+            # generate() inside the provider on any error, so behavior is
+            # never worse than the baseline.
+            effective_temp = (
+                temperature_override if temperature_override is not None else self.temperature
+            )
+            response = await self.llm_router.generate_stream(
+                provider=self.provider,
+                model=self.model,
+                prompt=prompt,
+                on_chunk=on_stream_chunk,
+                temperature=effective_temp,
+                max_tokens=effective_max_tokens,
+                system_prompt=system_prompt,
+                thinking_effort=self.thinking_effort,
+                request_timeout=self.request_timeout,
+            )
+        else:
+            response = await self._call_llm(
+                prompt,
+                system_prompt,
+                max_tokens=effective_max_tokens,
+                temperature=temperature_override,
+            )
 
         if isinstance(response, LLMError):
             return self._create_result(response)
@@ -730,6 +909,105 @@ class CoderAgent(BaseAgent):
 
         return result
 
+    @staticmethod
+    def _detect_truncation(code: str, language: str | None = None) -> dict[str, Any]:
+        """Detect if generated code looks truncated (LLM hit max_tokens mid-output).
+
+        КАО#VR-29 — when Anthropic/OpenAI hit the response cap they cut off
+        mid-statement without warning. For HTML/JS sessions the silent break
+        is catastrophic: an unclosed ``<script>`` makes the browser ignore
+        ALL inline JS, so every handler in the page is dead. We catch the
+        worst classes of truncation cheaply:
+
+          * unbalanced ``<script>`` vs ``</script>``
+          * unbalanced ``<style>`` vs ``</style>``
+          * unbalanced ``{`` vs ``}`` in the trailing 4 kB (heuristic — full-
+            file balance is too noisy because of inline JSON in HTML)
+          * trailing line that ends mid-identifier or mid-keyword (no
+            terminator ``;`` ``,`` ``)`` ``}`` ``>`` and not a comment / blank)
+          * for HTML: missing ``</html>`` and ``</body>`` at EOF
+
+        Returns dict ``{truncated: bool, reasons: [str], severity: str}``.
+        ``severity`` = ``critical`` if HTML/JS parsability breaks
+        (unbalanced script/style/braces), else ``warning``.
+        """
+        if not code:
+            return {"truncated": False, "reasons": [], "severity": "none"}
+
+        reasons: list[str] = []
+        lower = (language or "").lower()
+        is_html = lower in (
+            "html", "javascript_browser", "typescript_browser", "canvas", "p5js",
+        ) or "<!doctype" in code[:200].lower() or "<html" in code[:1000].lower()
+
+        # 1. <script>/<style> tag balance
+        open_script = code.count("<script")
+        close_script = code.count("</script>")
+        if open_script > close_script:
+            reasons.append(
+                f"unbalanced <script>: {open_script} open, {close_script} close "
+                f"(LLM likely truncated mid-script)"
+            )
+        open_style = code.count("<style")
+        close_style = code.count("</style>")
+        if open_style > close_style:
+            reasons.append(
+                f"unbalanced <style>: {open_style} open, {close_style} close"
+            )
+
+        # 2. Brace balance in trailing window (catches JS-truncation patterns
+        #    even when <script> tags aren't used, e.g. raw Python/JS files)
+        tail = code[-4096:] if len(code) > 4096 else code
+        # Only consider braces outside strings (very rough — strip string
+        # literals first to reduce noise).
+        tail_stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '', tail)
+        tail_stripped = re.sub(r"'(?:[^'\\]|\\.)*'", "", tail_stripped)
+        tail_stripped = re.sub(r"`(?:[^`\\]|\\.)*`", "", tail_stripped)
+        open_brace = tail_stripped.count("{")
+        close_brace = tail_stripped.count("}")
+        if open_brace > close_brace + 2:  # allow some slop
+            reasons.append(
+                f"unbalanced braces in tail: {open_brace} open vs {close_brace} close"
+            )
+
+        # 3. Mid-identifier / mid-keyword tail. A healthy code file ends on
+        #    a terminator. A truncated LLM response often ends mid-word.
+        # Strip trailing whitespace.
+        stripped = code.rstrip()
+        if stripped:
+            last_char = stripped[-1]
+            # Healthy terminators include: ; , ) } ] > " ' ` / (for /* */) and
+            # word-end punctuation. Anything else is suspicious.
+            if last_char not in (
+                ";", ",", ")", "}", "]", ">", '"', "'", "`", "/", "*", "\n",
+            ):
+                # Look at last line: if it's a comment or pure word, allow.
+                last_line = stripped.splitlines()[-1].strip()
+                # Common comment markers
+                if not last_line.startswith(("//", "#", "/*", "*", "*/")):
+                    reasons.append(
+                        f"file ends mid-token: {last_line[-40:]!r}"
+                    )
+
+        # 4. HTML missing closing tags
+        if is_html:
+            tail_html = code[-2048:].lower()
+            if "</html>" not in tail_html:
+                reasons.append("HTML file missing </html> at EOF")
+            if "</body>" not in tail_html:
+                reasons.append("HTML file missing </body> at EOF")
+
+        # Severity: anything that makes <script> or HTML unparseable is critical.
+        critical_markers = ("<script>", "<style>", "</html>", "</body>", "unbalanced braces")
+        critical = any(any(m in r for m in critical_markers) for r in reasons)
+        severity = "critical" if critical else ("warning" if reasons else "none")
+        return {
+            "truncated": bool(reasons),
+            "reasons": reasons,
+            "severity": severity,
+            "code_length": len(code),
+        }
+
     def parse_response(self, content: str) -> dict[str, Any]:
         """Parse the coder's response to extract code and metadata."""
         result: dict[str, Any] = {
@@ -826,5 +1104,19 @@ class CoderAgent(BaseAgent):
         )
         if notes_match:
             result["notes"] = notes_match.group(1).strip()
+
+        # КАО#VR-29 — surface truncation status. Stored on the result dict;
+        # the orchestrator decides whether to retry / warn the user. A
+        # `truncated=True` with severity=critical means the rendered output
+        # will be broken (unclosed <script>, missing </html>, etc.). The
+        # orchestrator can log this prominently and the UI can surface it
+        # in the Visual Review panel.
+        result["truncation"] = self._detect_truncation(result.get("code", ""), None)
+        if result["truncation"]["truncated"]:
+            logger.warning(
+                "Coder output truncation detected (severity=%s): %s",
+                result["truncation"]["severity"],
+                "; ".join(result["truncation"]["reasons"][:3]),
+            )
 
         return result

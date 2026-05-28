@@ -19,6 +19,7 @@ from app.db.models import (
     Session,
     SessionStatus,
     SummaryAudit,
+    Webhook,
 )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "Intervention",
     "FinalResult",
     "AppSetting",
+    "Webhook",
 ]

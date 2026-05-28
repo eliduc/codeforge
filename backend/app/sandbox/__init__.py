@@ -476,6 +476,103 @@ class SandboxClient:
             )
 
 
+    # ------------------------------------------------------------------
+    # Visual Review (Wave 1) — capture stills of an HTML page in Chromium
+    # ------------------------------------------------------------------
+
+    # Hard ceiling on a single capture call (defence-in-depth alongside the
+    # sandbox-side request timeout). Keeps the orchestrator from hanging on
+    # a sandbox bug.
+    _SCREENSHOT_OVERALL_TIMEOUT_SEC: int = 20
+
+    async def capture_screenshots(
+        self,
+        html: str,
+        timestamps: Optional[list[float]] = None,
+        timeout: int = 20,
+    ) -> dict:
+        """Capture N stills from an HTML page in headless Chromium.
+
+        Args:
+            html: Complete HTML page content.
+            timestamps: List of seconds-after-page-load at which to capture
+                each frame. Defaults to (0.5, 2, 5, 8, 12).
+            timeout: Overall capture timeout in seconds (clamped to 30).
+
+        Returns:
+            Dict with keys: success (bool), frames (list[dict]), error (str|None),
+            capture_time_ms (int). Each frame dict has:
+              frame_index: int, t_seconds: float, width: int, height: int,
+              image_b64: str (base64-encoded PNG bytes).
+        """
+        if timestamps is None:
+            timestamps = [0.5, 2.0, 5.0, 8.0, 12.0]
+
+        # Clamp timeout to the sandbox's accepted range.
+        effective_timeout = max(5, min(timeout, self._SCREENSHOT_OVERALL_TIMEOUT_SEC))
+
+        try:
+            client = await self._get_client()
+            logger.info(
+                f"Requesting {len(timestamps)} screenshots, timeout={effective_timeout}s"
+            )
+
+            request_timeout = effective_timeout + 30
+            response = await client.post(
+                "/capture-screenshots",
+                json={
+                    "html": html,
+                    "timestamps": timestamps,
+                    "timeout": effective_timeout,
+                },
+                timeout=request_timeout,
+            )
+
+            if response.status_code != 200:
+                error_text = response.text[:500]
+                logger.error(
+                    f"Screenshot capture returned {response.status_code}: {error_text}"
+                )
+                return {
+                    "success": False,
+                    "frames": [],
+                    "error": f"Sandbox screenshot error: {response.status_code} - {error_text}",
+                    "capture_time_ms": 0,
+                }
+
+            data = response.json()
+            logger.info(
+                f"Screenshot capture: success={data.get('success')}, "
+                f"frames={len(data.get('frames', []))}"
+            )
+            return data
+
+        except httpx.TimeoutException:
+            logger.error(f"Screenshot capture request timed out after {effective_timeout}+30s")
+            return {
+                "success": False,
+                "frames": [],
+                "error": f"Screenshot capture timed out after {effective_timeout}s",
+                "capture_time_ms": 0,
+            }
+        except httpx.ConnectError as e:
+            logger.error(f"Cannot connect to sandbox for screenshot capture: {e}")
+            return {
+                "success": False,
+                "frames": [],
+                "error": f"Cannot connect to sandbox service at {self.base_url}",
+                "capture_time_ms": 0,
+            }
+        except Exception as e:
+            logger.exception(f"Screenshot capture error: {e}")
+            return {
+                "success": False,
+                "frames": [],
+                "error": str(e)[:500],
+                "capture_time_ms": 0,
+            }
+
+
 # Global sandbox client instance
 # ACCEPTED RISK (BUG #36): This singleton is not thread-safe, but the app
 # uses asyncio (single-threaded event loop) so concurrent mutation is not

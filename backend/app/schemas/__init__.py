@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.db.models import AgentType, CodeVersionStatus, IssueSeverity, SessionStatus
 
@@ -202,6 +202,15 @@ class SessionSettings(BaseModel):
     theme: str | None = None
     notes: str | None = None
     custom_flags: list[str] = Field(default_factory=list, max_length=50)
+    # Feature #1: enable Anthropic streaming for LLM calls. Default is None
+    # (orchestrator interprets missing key as True; explicit False disables).
+    streaming: bool | None = None
+    # KAO#S3 — Visual-review gating. Read by app/core/visual_review.py
+    # (should_run_visual_review). Without these fields the model rejected
+    # legitimate payloads with extra_forbidden, even though runtime relied on
+    # them. Defaults match runtime semantics: neither force nor skip is set.
+    force_visual_review: bool = False
+    skip_visual_review: bool = False
 
 
 # ============================================================================
@@ -219,14 +228,25 @@ class SessionCreate(BaseModel):
     attachments: list[AttachmentInfo] = Field(default_factory=list)
     language: str = "python"
 
-    _KNOWN_LANGUAGES: ClassVar[set[str]] = {"python", "javascript", "typescript", "java", "go", "rust", "c", "cpp", "csharp", "ruby", "php", "swift", "kotlin", "html", "css", "sql", "bash", "shell", "r", "scala", "dart", "lua", "zig", "nim", "elixir", "haskell"}
+    _KNOWN_LANGUAGES: ClassVar[set[str]] = {
+        "python", "javascript", "typescript", "java", "go", "rust",
+        "c", "cpp", "csharp", "ruby", "php", "swift", "kotlin",
+        "html", "htm", "css", "sql", "bash", "shell",
+        "r", "scala", "dart", "lua", "zig", "nim", "elixir", "haskell",
+        # Browser-language hints: frontend marks browser-executable code (used
+        # by the sandbox to route to headless Chromium). Accept them on the API
+        # so PATCH /sessions doesn't 422.
+        "javascript_browser", "typescript_browser",
+    }
 
     @field_validator("language")
     @classmethod
     def normalize_language(cls, v: str) -> str:
         normalized = v.strip().lower()
         if normalized not in cls._KNOWN_LANGUAGES:
-            _schemas_logger.warning(f"Unknown language '{normalized}' — not in known set. Allowing anyway.")
+            raise ValueError(
+                f"Unsupported language '{v}'. Supported: {sorted(cls._KNOWN_LANGUAGES)}"
+            )
         return normalized
     max_iterations: int = Field(default=5, ge=1, le=50)
     auto_continue: bool = True
@@ -236,14 +256,38 @@ class SessionCreate(BaseModel):
     execution_timeout: int = Field(default=60, ge=10, le=300, description="Execution timeout in seconds")
     max_fix_attempts: int = Field(default=3, ge=1, le=10, description="Max attempts to fix failing code per iteration")
     auto_install_deps: bool = Field(default=True, description="Auto-install missing dependencies")
-    agent_timeout: int = Field(default=300, ge=60, le=1800, description="LLM API call timeout per agent in seconds")
+    agent_timeout: int = Field(default=600, ge=60, le=3600, description="Overall agent timeout in seconds")
+    request_timeout: int = Field(default=300, ge=30, le=3600, description="Per-LLM-request httpx timeout in seconds")
+
+    # Feature #3a/#3b/#7 — guards & test-driven mode
+    cost_limit_usd: float | None = Field(default=None, ge=0, description="Hard cost cap in USD; None disables")
+    session_timeout_sec: int | None = Field(default=None, ge=60, le=86400, description="Wall-clock budget for the entire workflow")
+    expected_output: str | None = Field(default=None, max_length=100000, description="Expected stdout for test-driven mode")
 
     settings: SessionSettings = Field(default_factory=SessionSettings)
     agent_configs: list[AgentConfigCreate] = Field(default_factory=list)
 
+    # When agent_configs is empty, expand the default agent set using these counts.
+    # Validated as [1, 4]; out-of-range yields a 422 via Pydantic.
+    num_coders: int = Field(default=1, ge=1, le=4, description="Number of coder agents (1-4) when agent_configs omitted")
+    num_testers: int = Field(default=2, ge=1, le=4, description="Number of tester agents (1-4) when agent_configs omitted")
+
+    @model_validator(mode="after")
+    def check_request_timeout_le_agent(self) -> "SessionCreate":
+        if self.request_timeout > self.agent_timeout:
+            self.request_timeout = self.agent_timeout
+        return self
+
 
 class SessionUpdate(BaseModel):
-    """Schema for updating a session."""
+    """Schema for updating a session.
+
+    Reject unknown fields (defense-in-depth: prevents mass-assignment attacks
+    where an attacker tries to set internal fields like `status`, `user_id`,
+    `is_admin`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     specification: str | None = Field(default=None, max_length=100000)
@@ -257,8 +301,25 @@ class SessionUpdate(BaseModel):
     max_fix_attempts: int | None = Field(default=None, ge=1, le=10)
     auto_install_deps: bool | None = None
     auto_continue: bool | None = None
-    agent_timeout: int | None = Field(default=None, ge=60, le=1800)
+    agent_timeout: int | None = Field(default=None, ge=60, le=3600)
+    request_timeout: int | None = Field(default=None, ge=30, le=3600)
+    cost_limit_usd: float | None = Field(default=None, ge=0)
+    session_timeout_sec: int | None = Field(default=None, ge=60, le=86400)
+    expected_output: str | None = Field(default=None, max_length=100000)
     settings: SessionSettings | None = None
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: str | None) -> str | None:
+        """Same whitelist as SessionCreate — reject unsupported languages."""
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if normalized not in SessionCreate._KNOWN_LANGUAGES:
+            raise ValueError(
+                f"Unsupported language '{v}'. Supported: {sorted(SessionCreate._KNOWN_LANGUAGES)}"
+            )
+        return normalized
 
 
 class SessionResponse(BaseSchema):
@@ -280,7 +341,13 @@ class SessionResponse(BaseSchema):
     execution_timeout: int = 60
     max_fix_attempts: int = 3
     auto_install_deps: bool = True
-    agent_timeout: int = 300
+    agent_timeout: int = 600
+    request_timeout: int = 300
+
+    # Feature #3a/#3b/#7
+    cost_limit_usd: float | None = None
+    session_timeout_sec: int | None = None
+    expected_output: str | None = None
 
     status: SessionStatus
     settings: dict[str, Any]
@@ -331,6 +398,7 @@ class PromptTemplateUpdate(BaseModel):
     template_text: str | None = None
     is_default: bool | None = None
     description: str | None = None
+    change_note: str | None = Field(default=None, max_length=500)
 
 
 class PromptTemplateResponse(BaseSchema):
@@ -342,8 +410,23 @@ class PromptTemplateResponse(BaseSchema):
     template_text: str
     is_default: bool
     description: str | None
+    current_version: int = 1
     created_at: datetime
     updated_at: datetime
+
+
+class PromptTemplateVersionResponse(BaseSchema):
+    """Schema for a historical prompt template version."""
+
+    id: int
+    template_id: int
+    version_number: int
+    name: str
+    agent_type: str
+    template_text: str
+    description: str | None = None
+    change_note: str | None = None
+    created_at: datetime
 
 
 # ============================================================================
@@ -509,6 +592,29 @@ class SessionMetricsResponse(BaseModel):
     by_agent_type: dict[str, dict[str, Any]]
 
 
+class BulkDeleteRequest(BaseModel):
+    """Schema for bulk session delete request."""
+
+    session_ids: list[str]
+
+
+class BulkDeleteResponse(BaseModel):
+    """Schema for bulk session delete response."""
+
+    deleted_count: int
+    deleted_ids: list[str] = Field(default_factory=list)
+    failed_ids: list[str]
+
+
+class CostAlert(BaseModel):
+    """Schema for cost budget alert."""
+
+    cost_usd: float
+    threshold_usd: float
+    severity: str  # "info" | "warning" | "critical"
+    message: str
+
+
 class SessionMetrics(BaseModel):
     """Schema for detailed session metrics."""
 
@@ -522,6 +628,7 @@ class SessionMetrics(BaseModel):
     iterations_completed: int
     by_agent: dict[str, dict[str, Any]]
     by_provider: dict[str, dict[str, Any]]
+    cost_alert: CostAlert | None = None
 
 
 # ============================================================================
@@ -711,6 +818,34 @@ class EnhanceResponse(BaseModel):
     message: str
 
 
+class EnhancerPreviewItem(BaseModel):
+    """One enhancer's raw preview output (no DB persistence)."""
+
+    agent_type: str  # enhancer_design | enhancer_func | enhancer_security
+    success: bool
+    content: str | None = None
+    parsed_data: dict | None = None
+    error: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    latency_ms: int = 0
+    llm_provider: str
+    llm_model: str
+
+
+class EnhancePreviewResponse(BaseModel):
+    """Dry-run response: enhancer suggestions without applying or persisting."""
+
+    preview: bool = True
+    parent_session_id: str
+    enhancers: list[EnhancerPreviewItem]
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    total_latency_ms: int = 0
+
+
 class CuratedSuggestion(BaseModel):
     """A single curated enhancement suggestion selected/edited by the user."""
 
@@ -719,6 +854,11 @@ class CuratedSuggestion(BaseModel):
     priority: str = "medium"  # critical, high, medium, low
     description: str
     implementation: str | None = None
+    # VR-39 — per-enhancement attachments (files / git repo). Merged into
+    # the child session's attachments bag at apply time so coders see the
+    # referenced material as LLM context. Only populated for user-authored
+    # enhancements (`category == "user"`); LLM-generated ones leave it None.
+    attachments: list[AttachmentInfo] | None = None
 
 
 class ApplyEnhancementsRequest(BaseModel):
@@ -873,3 +1013,208 @@ class ImportResponse(BaseModel):
     imported_count: int
     session_ids: list[str]
     message: str
+
+
+# ============================================================================
+# Session Template Schemas
+# ============================================================================
+
+
+class TemplateCreate(BaseModel):
+    """Schema for creating a session template directly (not from a session)."""
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=10000)
+    agent_configs: list[dict[str, Any]] = Field(default_factory=list)
+    language: str = "python"
+    max_iterations: int = Field(default=5, ge=1, le=50)
+    auto_continue: bool = True
+    enable_code_execution: bool = True
+    execution_timeout: int = Field(default=60, ge=10, le=300)
+    max_fix_attempts: int = Field(default=3, ge=1, le=10)
+    auto_install_deps: bool = True
+    agent_timeout: int = Field(default=600, ge=60, le=3600)
+    request_timeout: int = Field(default=300, ge=30, le=3600)
+    settings: dict[str, Any] | None = None
+
+
+class TemplateFromSessionRequest(BaseModel):
+    """Schema for snapshotting a session into a template."""
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=10000)
+
+
+class TemplateUpdate(BaseModel):
+    """Schema for updating a template's name/description."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=10000)
+
+
+class TemplateResponse(BaseSchema):
+    """Schema for template response."""
+
+    id: str
+    name: str
+    description: str | None = None
+    agent_configs: list[dict[str, Any]] = []
+    language: str
+    max_iterations: int
+    auto_continue: bool = True
+    enable_code_execution: bool = True
+    execution_timeout: int = 60
+    max_fix_attempts: int = 3
+    auto_install_deps: bool = True
+    agent_timeout: int = 600
+    request_timeout: int = 300
+    settings: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TemplateApplyRequest(BaseModel):
+    """Schema for applying a template — creates a new session."""
+
+    name: str = Field(min_length=1, max_length=255)
+    specification: str = Field(min_length=1, max_length=100000)
+
+
+# ============================================================================
+# Webhook Schemas
+# ============================================================================
+
+
+_VALID_WEBHOOK_TYPES = {"slack", "discord", "generic"}
+_VALID_WEBHOOK_EVENTS = {
+    "workflow_completed",
+    "workflow_error",
+    "workflow_cancelled",
+    "awaiting_enhancement",
+}
+
+
+def _validate_event_filter(v: str | None) -> str | None:
+    if v is None or not v.strip():
+        return None
+    parts = [p.strip() for p in v.split(",") if p.strip()]
+    bad = [p for p in parts if p not in _VALID_WEBHOOK_EVENTS]
+    if bad:
+        raise ValueError(
+            f"Unknown event(s): {bad}. Valid events: {sorted(_VALID_WEBHOOK_EVENTS)}"
+        )
+    return ",".join(parts)
+
+
+class WebhookCreate(BaseModel):
+    """Schema for creating a webhook."""
+
+    name: str = Field(min_length=1, max_length=255)
+    url: str = Field(min_length=8, max_length=2048)
+    webhook_type: str = Field(default="generic")
+    event_filter: str | None = Field(default=None, max_length=500)
+    secret: str | None = Field(default=None, max_length=255)
+    enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+    @field_validator("webhook_type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        v = v.lower().strip()
+        if v not in _VALID_WEBHOOK_TYPES:
+            raise ValueError(
+                f"Unknown webhook_type '{v}'. Must be one of: {sorted(_VALID_WEBHOOK_TYPES)}"
+            )
+        return v
+
+    @field_validator("event_filter")
+    @classmethod
+    def validate_events(cls, v: str | None) -> str | None:
+        return _validate_event_filter(v)
+
+
+class WebhookUpdate(BaseModel):
+    """Schema for updating a webhook (all fields optional)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    url: str | None = Field(default=None, min_length=8, max_length=2048)
+    webhook_type: str | None = None
+    event_filter: str | None = Field(default=None, max_length=500)
+    secret: str | None = Field(default=None, max_length=255)
+    enabled: bool | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+    @field_validator("webhook_type")
+    @classmethod
+    def validate_type(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.lower().strip()
+        if v not in _VALID_WEBHOOK_TYPES:
+            raise ValueError(
+                f"Unknown webhook_type '{v}'. Must be one of: {sorted(_VALID_WEBHOOK_TYPES)}"
+            )
+        return v
+
+    @field_validator("event_filter")
+    @classmethod
+    def validate_events(cls, v: str | None) -> str | None:
+        return _validate_event_filter(v)
+
+
+class WebhookResponse(BaseSchema):
+    """Schema for webhook response. Secret is never returned in full."""
+
+    id: str
+    name: str
+    url: str
+    webhook_type: str
+    event_filter: str | None = None
+    enabled: bool
+    has_secret: bool = False
+    last_sent_at: datetime | None = None
+    last_status: int | None = None
+    last_error: str | None = None
+    total_sent: int = 0
+    total_failed: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class WebhookTestResponse(BaseModel):
+    """Schema for webhook test result."""
+
+    success: bool
+    status_code: int | None = None
+    error: str | None = None
+
+
+# ============================================================================
+# Checkpoint Schemas
+# ============================================================================
+
+
+class CheckpointResponse(BaseSchema):
+    """Schema for a workflow checkpoint (crash-recovery snapshot)."""
+
+    id: UUID
+    session_id: UUID
+    iteration: int
+    phase: str
+    total_tokens: int
+    total_cost_usd: float
+    created_at: datetime

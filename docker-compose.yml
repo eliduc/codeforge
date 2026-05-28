@@ -91,9 +91,13 @@ services:
       - "3300:80"
     depends_on:
       - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
   postgres_data:
-    external: true
-    name: claudecodestage_postgres_data

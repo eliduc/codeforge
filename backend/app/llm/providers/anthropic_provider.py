@@ -2,27 +2,124 @@
 
 import asyncio
 import logging
+import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from anthropic import AsyncAnthropic, APIError, APIConnectionError, RateLimitError, APIStatusError
 
 from app.llm.base import BaseLLMProvider, LLMError, LLMResponse
+from app.llm import registry as model_registry
+
+
+# Regex to extract family + version from any Anthropic model id.
+# Matches: claude-opus-4-7, claude-sonnet-4-6-20251022, claude-haiku-5-0, etc.
+# Also matches dot-style: claude-opus-4.7
+_MODEL_FAMILY_RE = re.compile(
+    r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-._]?(\d+)?",
+    re.IGNORECASE,
+)
+
+
+def _parse_family(model_id: str) -> tuple[str, int, int] | None:
+    """Extract (family_name, major, minor) from a Claude model id, or None.
+
+    Examples:
+        claude-opus-4-7        -> ('opus', 4, 7)
+        claude-sonnet-4-6-2025 -> ('sonnet', 4, 6)
+        claude-haiku-5-0       -> ('haiku', 5, 0)
+        claude-opus-4.7        -> ('opus', 4, 7)
+    """
+    m = _MODEL_FAMILY_RE.search(model_id)
+    if not m:
+        return None
+    name = m.group(1).lower()
+    major = int(m.group(2))
+    minor = int(m.group(3) or 0)
+    return (name, major, minor)
 
 logger = logging.getLogger(__name__)
+
+
+# Runtime cache of models that the Anthropic API has rejected for "thinking"
+# (adaptive or extended). Populated lazily when a 400 response with one of the
+# unsupported-thinking error messages arrives. On subsequent calls we skip the
+# thinking config entirely for these models so the workflow never has to take
+# the retry path twice for the same model.
+_thinking_unsupported_models: set[str] = set()
+
+
+# Substrings (lowercase, case-insensitive match) in API 400 messages that
+# indicate the model rejected our "thinking" config and we should retry the
+# request once without thinking.
+_THINKING_UNSUPPORTED_MARKERS: tuple[str, ...] = (
+    "adaptive thinking is not supported",
+    "extended thinking is not supported",
+    "thinking is not supported",
+)
+
+
+def _is_thinking_unsupported_error(err: Exception) -> bool:
+    """Return True if the Anthropic API error indicates thinking isn't supported.
+
+    We check both the exception message and (defensively) the parsed body, since
+    the SDK formats the user-facing message in slightly different shapes across
+    versions.
+    """
+    text = str(err).lower()
+    if any(marker in text for marker in _THINKING_UNSUPPORTED_MARKERS):
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        try:
+            inner = body.get("error", {})
+            msg = (inner.get("message") if isinstance(inner, dict) else None) or ""
+            if any(marker in str(msg).lower() for marker in _THINKING_UNSUPPORTED_MARKERS):
+                return True
+        except Exception:  # noqa: BLE001 - never let body parsing crash the path
+            pass
+    return False
+
+
+def _is_adaptive_thinking_model(model_id: str) -> bool:
+    """KAO#VR-32 — version-agnostic predicate for adaptive thinking support.
+
+    Rules (preserving the original semantics):
+      * Claude 5.x and beyond — ALL families assumed adaptive.
+      * Claude 4.6+ — only Opus and Sonnet (Haiku 4.6 is NOT adaptive).
+      * Anything else — False.
+
+    Encoded without naming a specific version, so claude-opus-4-7,
+    claude-haiku-6-0, etc. all return True automatically.
+    """
+    parsed = _parse_family(model_id)
+    if not parsed:
+        return False
+    name, major, minor = parsed
+    if major >= 5:
+        return True  # all Claude 5.x+ assumed adaptive across families
+    if major == 4 and minor >= 6:
+        return name in ("opus", "sonnet")
+    return False
 
 
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude API provider with Claude 4.6 adaptive thinking."""
 
-    # Fallback models (latest first)
+    # KAO#VR-32 — replaced with version-agnostic parser (_parse_family).
+    # Last-resort fallback only used when both the live API fetch AND the
+    # models.dev registry are unreachable. Listed as bare family names with
+    # no version pinned, so we never bake a deprecating version into defaults.
     CODE_MODELS = [
-        "claude-sonnet-4-6",
-        "claude-opus-4-6",
+        "claude-opus",
+        "claude-sonnet",
+        "claude-haiku",
     ]
 
-    # Pricing per 1M tokens (input, output, thinking)
+    # Pricing per 1M tokens (input, output, thinking).
+    # Kept as a fallback when models.dev registry enrichment is unavailable.
     PRICING = {
         # Claude 4.6 family (latest)
         "claude-opus-4-6": (5.00, 25.00, 25.00),
@@ -33,14 +130,10 @@ class AnthropicProvider(BaseLLMProvider):
         "claude-haiku-4-5": (1.00, 5.00, 5.00),
     }
 
-    # Models that support extended thinking (all Claude 4+ models)
-    THINKING_MODELS = [
-        "opus-4-6", "sonnet-4-6",
-        "opus-4-5", "sonnet-4-5", "haiku-4-5",
-    ]
+    # KAO#VR-32 — replaced with _supports_thinking() predicate that uses
+    # _parse_family to detect any Claude 4+ model. No hardcoded list.
 
-    # Models that support adaptive thinking (4.6 only)
-    ADAPTIVE_THINKING_MODELS = ["opus-4-6", "sonnet-4-6"]
+    # KAO#VR-32 — replaced with _is_adaptive_thinking_model() predicate.
 
     def get_max_output_tokens(self, model: str) -> int:
         """Return the max allowed output tokens for a given Anthropic model."""
@@ -89,7 +182,7 @@ class AnthropicProvider(BaseLLMProvider):
                 api_key=self.api_key,
                 base_url=self.base_url,
                 max_retries=0,
-                timeout=httpx.Timeout(None, connect=30.0),
+                timeout=httpx.Timeout(600.0, connect=30.0),  # 10 min read timeout to prevent infinite hangs
             )
         return self._client
 
@@ -100,14 +193,50 @@ class AnthropicProvider(BaseLLMProvider):
             self._client = None
 
     def _supports_thinking(self, model: str) -> bool:
-        """Check if model supports extended thinking."""
-        model_lower = model.lower()
-        return any(tm in model_lower for tm in self.THINKING_MODELS)
+        """Check if model supports extended thinking. All Claude 4+ do.
+
+        KAO#VR-32 — version-agnostic via _parse_family. Returns False for
+        Claude 3 and unparseable names (we no longer fall back to a hardcoded
+        list — those models are out of support).
+        """
+        parsed = _parse_family(model)
+        if not parsed:
+            return False
+        _, major, _ = parsed
+        return major >= 4
 
     def _supports_adaptive_thinking(self, model: str) -> bool:
-        """Check if model supports adaptive thinking (4.6+)."""
+        """Check if model supports adaptive thinking (4.6+ Opus/Sonnet, all 5.x+).
+
+        KAO#VR-32 — delegates to the module-level predicate, which works
+        for any future Claude version without code changes.
+        """
+        return _is_adaptive_thinking_model(model)
+
+    async def get_pricing(self, model: str) -> tuple[float, float] | None:
+        """KAO#VR-32 — pricing lookup with registry fallback.
+
+        Order:
+          1. Hardcoded ``PRICING`` (fast, no network).
+          2. ``models.dev`` registry (async, cached 24h).
+          3. Family prefix match against ``PRICING`` (last resort).
+        """
+        if model in self.PRICING:
+            costs = self.PRICING[model]
+            return (costs[0], costs[1])
+        # Registry enrichment for newly-released model ids.
+        try:
+            reg = await model_registry.get_pricing("anthropic", model)
+            if reg is not None:
+                return reg
+        except Exception:  # noqa: BLE001
+            pass
+        # Family-prefix fallback (e.g. claude-opus-4-7 → claude-opus-4-6 pricing).
         model_lower = model.lower()
-        return any(tm in model_lower for tm in self.ADAPTIVE_THINKING_MODELS)
+        for pid, costs in self.PRICING.items():
+            if model_lower.startswith(pid.lower()):
+                return (costs[0], costs[1])
+        return None
 
     async def is_available(self) -> bool:
         """Check availability and fetch models from API."""
@@ -128,28 +257,23 @@ class AnthropicProvider(BaseLLMProvider):
                     data = response.json()
                     models = data.get("data", [])
 
-                    # Classify models into families
-                    families: dict[str, tuple[dict, int, str]] = {}
+                    # Classify models into families using regex (future-proof).
+                    # Key: f"{name}-{major}.{minor}" e.g. "opus-4.7", "sonnet-5.0"
+                    # Skip Claude 3.x and earlier — only 4.0+ are supported by this provider.
+                    MIN_MAJOR = 4
+                    families: dict[str, tuple[dict, int, str, tuple[str, int, int]]] = {}
 
                     for m in models:
                         model_id = m.get("id", "")
-                        model_lower = model_id.lower()
-
-                        # Determine family
-                        family = None
-                        if "opus-4-6" in model_lower or "opus-4.6" in model_lower:
-                            family = "opus-4.6"
-                        elif "sonnet-4-6" in model_lower or "sonnet-4.6" in model_lower:
-                            family = "sonnet-4.6"
-                        elif "opus-4-5" in model_lower or "opus-4.5" in model_lower:
-                            family = "opus-4.5"
-                        elif "sonnet-4-5" in model_lower or "sonnet-4.5" in model_lower:
-                            family = "sonnet-4.5"
-                        elif "haiku-4-5" in model_lower or "haiku-4.5" in model_lower:
-                            family = "haiku-4.5"
-
-                        if not family:
+                        parsed = _parse_family(model_id)
+                        if not parsed:
                             continue
+                        name, major, minor = parsed
+                        if major < MIN_MAJOR:
+                            continue  # skip Claude 3.x and earlier
+
+                        family = f"{name}-{major}.{minor}"
+                        model_lower = model_id.lower()
 
                         # Priority: latest alias (0) > no date (1) > dated (2)
                         if "latest" in model_lower:
@@ -162,25 +286,22 @@ class AnthropicProvider(BaseLLMProvider):
                         created = m.get("created_at", "")
 
                         if family not in families:
-                            families[family] = (m, priority, created)
+                            families[family] = (m, priority, created, parsed)
                         elif priority < families[family][1]:
-                            families[family] = (m, priority, created)
+                            families[family] = (m, priority, created, parsed)
                         elif priority == families[family][1] and created > families[family][2]:
-                            families[family] = (m, priority, created)
+                            families[family] = (m, priority, created, parsed)
 
-                    # Build result: Sonnet first (best for coding), then Opus
-                    preferred_order = [
-                        "sonnet-4.6",   # Best for coding (recommended)
-                        "opus-4.6",     # Most intelligent
-                        "sonnet-4.5",
-                        "haiku-4.5",    # Fast / cheap
-                        "opus-4.5",
-                    ]
+                    # Sort families by (newest version desc, then by family preference: sonnet > opus > haiku for coding)
+                    family_order = {"sonnet": 0, "opus": 1, "haiku": 2}
+                    sorted_families = sorted(
+                        families.items(),
+                        # Sort key: (-major, -minor, family_order_index)
+                        # negative versions = descending; family_order ascending
+                        key=lambda kv: (-kv[1][3][1], -kv[1][3][2], family_order.get(kv[1][3][0], 99)),
+                    )
 
-                    result = []
-                    for fam in preferred_order:
-                        if fam in families:
-                            result.append(families[fam][0]["id"])
+                    result = [meta[0]["id"] for _, meta in sorted_families]
 
                     if result:
                         self._fetched_models = result
@@ -221,8 +342,10 @@ class AnthropicProvider(BaseLLMProvider):
         max_tokens: int = 4096,
         system_prompt: str | None = None,
         thinking_effort: str | None = None,
+        request_timeout: float | None = None,
         use_thinking: bool = False,
         thinking_budget: int = 10000,
+        request_json_mode: bool = False,
         **kwargs: Any,
     ) -> LLMResponse | LLMError:
         """Generate response with adaptive or extended thinking."""
@@ -234,17 +357,32 @@ class AnthropicProvider(BaseLLMProvider):
             logger.info(f"Clamping max_tokens {max_tokens} -> {model_limit} for {model}")
             max_tokens = model_limit
 
+        # JSON-mode prefill: starting the assistant turn with "{" forces the
+        # model to continue valid JSON. We strip-prepend "{" to the content on
+        # the way out so the caller still sees a complete JSON object.
+        # Skipped when adaptive/extended thinking is on — prefill is
+        # incompatible with the thinking block format.
+        json_prefill_active = False
+
+        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+
         create_kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
 
         if system_prompt:
             create_kwargs["system"] = system_prompt
 
-        # Thinking configuration
-        if self._supports_adaptive_thinking(model):
+        # Thinking configuration.
+        # If we've already learned at runtime that the API rejects "thinking"
+        # for this model, bypass all thinking config from the start. This
+        # prevents the "Adaptive thinking is not supported on this model"
+        # toast-spam after the first failed attempt.
+        if model in _thinking_unsupported_models:
+            create_kwargs["temperature"] = temperature
+        elif self._supports_adaptive_thinking(model):
             # Claude 4.6: use adaptive thinking
             if thinking_effort and thinking_effort != "none":
                 create_kwargs["thinking"] = {"type": "adaptive"}
@@ -260,25 +398,81 @@ class AnthropicProvider(BaseLLMProvider):
                 # Explicitly disabled — no thinking param, use temperature
                 create_kwargs["temperature"] = temperature
             else:
-                # Default: adaptive thinking with medium effort (balanced speed/quality).
-                # Without explicit effort, the API defaults to high which can be very slow
-                # on complex tasks (e.g. Opus 4.6 may exceed 900s).
+                # Default thinking effort depends on model:
+                # - Opus: medium (balanced speed/quality)
+                # - Sonnet: low (Sonnet with medium+ spends all 64K tokens on thinking
+                #   on complex tasks, producing 0 text output and timing out at ~800s)
+                default_effort = "medium" if "opus" in model.lower() else "low"
                 create_kwargs["thinking"] = {"type": "adaptive"}
-                create_kwargs["output_config"] = {"effort": "medium"}
-        elif use_thinking and self._supports_thinking(model):
-            # Older models (4.5): use legacy type=enabled + budget_tokens
-            create_kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
+                create_kwargs["output_config"] = {"effort": default_effort}
+        elif self._supports_thinking(model):
+            # Claude 4.5: use legacy type=enabled + budget_tokens
+            if thinking_effort and thinking_effort != "none":
+                # Map effort to budget tokens
+                effort_budget = {"low": 2048, "medium": 5000, "high": 10000, "max": 10000}
+                budget = effort_budget.get(thinking_effort, thinking_budget)
+                create_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": budget,
+                }
+            elif use_thinking:
+                create_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                }
+            else:
+                create_kwargs["temperature"] = temperature
         else:
             create_kwargs["temperature"] = temperature
+
+        # Apply JSON prefill after thinking config is set. Anthropic does NOT
+        # allow assistant prefill messages when extended/adaptive thinking is
+        # enabled, so only prefill when no "thinking" key is present.
+        if request_json_mode and "thinking" not in create_kwargs:
+            messages.append({"role": "assistant", "content": "{"})
+            json_prefill_active = True
+
+        # Apply per-request timeout override if provided
+        if request_timeout is not None:
+            create_kwargs["timeout"] = httpx.Timeout(request_timeout, connect=30.0)
 
         # Custom retry logic for 529 overloaded errors
         last_error = None
         for attempt in range(self.MAX_OVERLOAD_RETRIES):
             try:
-                response = await self.client.messages.create(**create_kwargs)
+                try:
+                    response = await self.client.messages.create(**create_kwargs)
+                except APIStatusError as thinking_err:
+                    # Detect "thinking is not supported" rejections and retry
+                    # ONCE without the thinking config. This handles cases where
+                    # our adaptive-thinking heuristic is too optimistic about a
+                    # model (e.g. claude-sonnet-4-6 rejects adaptive thinking).
+                    if (
+                        getattr(thinking_err, "status_code", None) == 400
+                        and "thinking" in create_kwargs
+                        and _is_thinking_unsupported_error(thinking_err)
+                    ):
+                        thinking_cfg = create_kwargs.pop("thinking", None)
+                        create_kwargs.pop("output_config", None)
+                        create_kwargs["temperature"] = temperature
+                        thinking_type = (
+                            thinking_cfg.get("type", "adaptive")
+                            if isinstance(thinking_cfg, dict)
+                            else "adaptive"
+                        )
+                        logger.warning(
+                            f"Model {model} does not support {thinking_type} thinking; "
+                            f"retrying without thinking"
+                        )
+                        # Re-attempt the API call ONCE without thinking. If this
+                        # still fails, let the exception propagate to the outer
+                        # error-handling so a real error gets surfaced.
+                        response = await self.client.messages.create(**create_kwargs)
+                        # Success — remember this model so future calls skip
+                        # thinking config from the start (no second toast).
+                        _thinking_unsupported_models.add(model)
+                    else:
+                        raise
                 latency_ms = int((time.time() - start_time) * 1000)
 
                 # Extract text content (skip thinking blocks)
@@ -286,6 +480,11 @@ class AnthropicProvider(BaseLLMProvider):
                 for block in response.content:
                     if hasattr(block, "text"):
                         content += block.text
+
+                # If we prefilled "{" the API echoes only the continuation —
+                # restore the leading brace so callers see complete JSON.
+                if json_prefill_active and not content.lstrip().startswith("{"):
+                    content = "{" + content
 
                 # Extract thinking tokens from usage if available
                 thinking_tokens = 0
@@ -330,6 +529,8 @@ class AnthropicProvider(BaseLLMProvider):
                         for block in response.content:
                             if hasattr(block, "text"):
                                 retry_content += block.text
+                        if json_prefill_active and retry_content and not retry_content.lstrip().startswith("{"):
+                            retry_content = "{" + retry_content
                         thinking_tokens = getattr(response.usage, 'thinking_tokens', 0) or 0
                         stop_reason = getattr(response, 'stop_reason', None)
                         logger.info(
@@ -369,7 +570,8 @@ class AnthropicProvider(BaseLLMProvider):
                             f"retry {attempt + 1}/{self.MAX_OVERLOAD_RETRIES} in {delay}s..."
                         )
                         await asyncio.sleep(delay)
-                        start_time = time.time()
+                        # NOTE: Do NOT reset start_time here — latency should
+                        # reflect total wall-clock time including retries/waits.
                         continue
                     else:
                         total_wait = sum(self.OVERLOAD_RETRY_DELAYS[:self.MAX_OVERLOAD_RETRIES - 1])
@@ -394,7 +596,6 @@ class AnthropicProvider(BaseLLMProvider):
                             f"retry {attempt + 1}/{self.MAX_OVERLOAD_RETRIES} in {delay}s..."
                         )
                         await asyncio.sleep(delay)
-                        start_time = time.time()
                         continue
                     else:
                         return LLMError(
@@ -432,3 +633,145 @@ class AnthropicProvider(BaseLLMProvider):
             retryable=True,
             raw_error=last_error,
         )
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        model: str,
+        on_chunk: Callable[[str], Awaitable[None]],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        system_prompt: str | None = None,
+        thinking_effort: str | None = None,
+        request_timeout: float | None = None,
+        use_thinking: bool = False,
+        thinking_budget: int = 10000,
+        **kwargs: Any,
+    ) -> LLMResponse | LLMError:
+        """Streaming variant — calls ``on_chunk`` for each text delta.
+
+        This is a proof-of-concept implementation. It uses the Anthropic
+        ``messages.stream`` API to get incremental text deltas. Thinking
+        configuration mirrors :meth:`generate` but the overflow-retry path
+        is intentionally simplified — if the stream completes with truncated
+        output, we return what we have rather than restarting from scratch.
+
+        Errors fall back to a non-streaming :meth:`generate` call so callers
+        always get a usable response (no silent regressions vs. baseline).
+        """
+        start_time = time.time()
+
+        # Clamp max_tokens to provider limit (same as generate)
+        model_limit = self._get_max_output_tokens(model)
+        if max_tokens > model_limit:
+            max_tokens = model_limit
+
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system_prompt:
+            create_kwargs["system"] = system_prompt
+
+        # Thinking config (mirrors generate)
+        if self._supports_adaptive_thinking(model):
+            if thinking_effort and thinking_effort != "none":
+                create_kwargs["thinking"] = {"type": "adaptive"}
+                effort_map = {"low": "low", "medium": "medium", "high": "high", "max": "max"}
+                effort = effort_map.get(thinking_effort, "high")
+                if effort == "max" and "opus" not in model.lower():
+                    effort = "high"
+                create_kwargs["output_config"] = {"effort": effort}
+            elif thinking_effort == "none":
+                create_kwargs["temperature"] = temperature
+            else:
+                default_effort = "medium" if "opus" in model.lower() else "low"
+                create_kwargs["thinking"] = {"type": "adaptive"}
+                create_kwargs["output_config"] = {"effort": default_effort}
+        elif self._supports_thinking(model):
+            if thinking_effort and thinking_effort != "none":
+                effort_budget = {"low": 2048, "medium": 5000, "high": 10000, "max": 10000}
+                budget = effort_budget.get(thinking_effort, thinking_budget)
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            elif use_thinking:
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            else:
+                create_kwargs["temperature"] = temperature
+        else:
+            create_kwargs["temperature"] = temperature
+
+        if request_timeout is not None:
+            create_kwargs["timeout"] = httpx.Timeout(request_timeout, connect=30.0)
+
+        try:
+            full_text = ""
+            async with self.client.messages.stream(**create_kwargs) as stream:
+                async for delta in stream.text_stream:
+                    full_text += delta
+                    try:
+                        await on_chunk(delta)
+                    except Exception as cb_err:  # noqa: BLE001
+                        # A failing UI callback must not abort the LLM call.
+                        logger.warning(f"Streaming on_chunk callback raised: {cb_err}")
+                message = await stream.get_final_message()
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # If text_stream produced nothing (e.g. all tokens went to thinking),
+            # fall back to extracting from the final message content.
+            if not full_text:
+                for block in message.content:
+                    if hasattr(block, "text"):
+                        full_text += block.text
+
+            thinking_tokens = getattr(message.usage, "thinking_tokens", 0) or 0
+            stop_reason = getattr(message, "stop_reason", None)
+
+            return LLMResponse(
+                content=full_text,
+                input_tokens=message.usage.input_tokens,
+                output_tokens=message.usage.output_tokens,
+                model=model,
+                provider=self.name,
+                latency_ms=latency_ms,
+                raw_response=message.model_dump(),
+                thinking_tokens=thinking_tokens,
+                stop_reason=stop_reason,
+            )
+
+        except (APIStatusError, RateLimitError, APIConnectionError, APIError) as e:
+            # Streaming-specific errors fall back to the non-streaming path so
+            # behavior never regresses below the baseline.
+            logger.warning(
+                f"Anthropic streaming failed ({type(e).__name__}: {e}); "
+                f"falling back to non-streaming generate()."
+            )
+            response = await self.generate(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                thinking_effort=thinking_effort,
+                request_timeout=request_timeout,
+                use_thinking=use_thinking,
+                thinking_budget=thinking_budget,
+                **kwargs,
+            )
+            if isinstance(response, LLMResponse) and response.content:
+                try:
+                    await on_chunk(response.content)
+                except Exception:  # noqa: BLE001
+                    pass
+            return response
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Unexpected streaming error: {e}")
+            return LLMError(
+                message=str(e),
+                provider=self.name,
+                model=model,
+                error_type="streaming_error",
+                retryable=False,
+                raw_error=e,
+            )

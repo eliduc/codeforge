@@ -4,6 +4,7 @@ import {
   setStoredToken,
   clearStoredToken,
   getCurrentUser,
+  probeCurrentUserForDevMode,
   type AuthUser,
 } from '../services/api'
 
@@ -37,22 +38,20 @@ export const useAuthStore = create<AuthState>((set) => ({
   loadFromStorage: async () => {
     const token = getStoredToken()
     if (!token) {
-      // No token — try calling /me without auth to check if auth is disabled (dev mode)
-      try {
-        const user = await getCurrentUser()
-        if (user.id === 'dev') {
-          // Dev mode — auth not required
-          set({
-            token: null,
-            user: { id: 'dev', email: 'dev@localhost', is_active: true },
-            isAuthenticated: true,
-            loading: false,
-            authDisabled: true,
-          })
-          return
-        }
-      } catch {
-        // 401 — auth is required, no token available
+      // КАО#SR-4 Round 4 — Probe /me only when running on localhost (dev mode
+      // detection). On stage/prod we skip the probe to avoid a guaranteed 401
+      // and its associated console.error noise on the anonymous /login page.
+      const user = await probeCurrentUserForDevMode()
+      if (user && user.id === 'dev') {
+        // Dev mode — auth not required
+        set({
+          token: null,
+          user: { id: 'dev', email: 'dev@localhost', is_active: true },
+          isAuthenticated: true,
+          loading: false,
+          authDisabled: true,
+        })
+        return
       }
       set({ loading: false })
       return

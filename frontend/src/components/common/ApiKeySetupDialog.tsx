@@ -1,15 +1,20 @@
-import { Fragment, useState } from 'react'
+// Улучшатели#5 P1·M — Settings API-key consolidation.
+// First-time wizard. Reuses <ApiKeyRow mode="bulk"> so the dialog and the
+// SettingsPage share placeholder strings, show/hide handling, and the post-save
+// `testLLMProvider` follow-up. The dialog keeps its own aggregate Save button
+// (it commits N providers at once) and delegates per-row save+test to each row
+// via an imperative ref handle.
+
+import { Fragment, useRef, useState } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { KeyIcon } from '@heroicons/react/24/outline'
-import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import notify from './StyledToast'
-import { apiFetch } from '../../services/api'
+import Button from './Button'
+import ApiKeyRow, { type ApiKeyRowHandle, type ApiKeyRowProvider } from '../ApiKeyRow'
 
-interface ProviderEntry {
-  name: string
+interface ProviderEntry extends ApiKeyRowProvider {
   label: string
   placeholder: string
-  isUrl?: boolean
 }
 
 const PROVIDERS: ProviderEntry[] = [
@@ -28,21 +33,17 @@ interface ApiKeySetupDialogProps {
 
 export default function ApiKeySetupDialog({ isOpen, onClose, onSaved }: ApiKeySetupDialogProps) {
   const [keys, setKeys] = useState<Record<string, string>>({})
-  const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
+  const rowRefs = useRef<Record<string, ApiKeyRowHandle | null>>({})
 
   function updateKey(provider: string, value: string) {
-    setKeys(prev => ({ ...prev, [provider]: value }))
+    setKeys((prev) => ({ ...prev, [provider]: value }))
   }
 
-  function toggleShow(provider: string) {
-    setShowKey(prev => ({ ...prev, [provider]: !prev[provider] }))
-  }
-
-  const filledCount = Object.values(keys).filter(v => v.trim()).length
+  const filledCount = Object.values(keys).filter((v) => v.trim()).length
 
   async function handleSave() {
-    const filled = Object.entries(keys).filter(([, v]) => v.trim())
+    const filled = PROVIDERS.filter((p) => (keys[p.name] || '').trim())
     if (filled.length === 0) {
       notify.error('Enter at least one API key')
       return
@@ -51,17 +52,13 @@ export default function ApiKeySetupDialog({ isOpen, onClose, onSaved }: ApiKeySe
     setSaving(true)
     let successCount = 0
 
-    for (const [provider, key] of filled) {
-      try {
-        const body: Record<string, string> = { api_key: key.trim() }
-        const result = await apiFetch<{ success: boolean }>(`/api/settings/providers/${provider}/config`, {
-          method: 'PUT',
-          body: JSON.stringify(body),
-        })
-        if (result.success) successCount++
-      } catch {
-        // continue with other providers
-      }
+    // Drive each row's saveAndTest sequentially so toasts are coherent and the
+    // server isn't flooded with parallel writes.
+    for (const p of filled) {
+      const handle = rowRefs.current[p.name]
+      if (!handle) continue
+      const { saved } = await handle.saveAndTest()
+      if (saved) successCount++
     }
 
     setSaving(false)
@@ -76,7 +73,10 @@ export default function ApiKeySetupDialog({ isOpen, onClose, onSaved }: ApiKeySe
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={() => { /* non-dismissible via backdrop */ }}>
+      {/* Улучшатели#5 P2·S — honor Esc to dismiss (backdrop click still ignored
+          to prevent accidental clicks during typing). Pass through to parent's
+          onClose so the user is never trapped on first launch. */}
+      <Dialog as="div" className="relative z-50" onClose={() => { if (!saving) onClose() }}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -100,73 +100,63 @@ export default function ApiKeySetupDialog({ isOpen, onClose, onSaved }: ApiKeySe
               leaveFrom="opacity-100 scale-100 translate-y-0"
               leaveTo="opacity-0 scale-90 translate-y-4"
             >
-              <Dialog.Panel className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-gradient-to-b from-gray-800 to-gray-900 border border-indigo-500/30 p-6 shadow-2xl transition-all">
-                {/* Header */}
+              {/* Улучшатели#5 P1·M — cf-* tokens replace gray-800/gray-900 gradient. */}
+              <Dialog.Panel className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-cf-panel text-cf-text border border-cf-border p-6 shadow-2xl transition-all">
+                {/* Header — first-time wizard framing stays unique to this dialog. */}
                 <div className="flex flex-col items-center text-center mb-6">
-                  <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-500/30 to-indigo-600/20 text-indigo-400 mb-4">
+                  <div className="p-4 rounded-2xl bg-indigo-100 text-indigo-700 dark:bg-cf-primary/15 dark:text-cf-primary mb-4">
                     <KeyIcon className="w-8 h-8" />
                   </div>
-                  <Dialog.Title className="text-xl font-bold text-white">
+                  <Dialog.Title className="text-xl font-bold text-cf-text">
                     Welcome to CodeForge
                   </Dialog.Title>
-                  <Dialog.Description className="text-sm text-gray-400 mt-2 max-w-sm leading-relaxed">
+                  <Dialog.Description className="text-sm text-cf-text-muted mt-2 max-w-sm leading-relaxed">
                     No LLM providers configured. Enter at least one API key to get started.
                   </Dialog.Description>
                 </div>
 
-                {/* Provider inputs */}
+                {/* Provider inputs — each row is the shared ApiKeyRow primitive. */}
                 <div className="space-y-3">
                   {PROVIDERS.map((p) => (
-                    <div key={p.name} className="flex items-center gap-3">
-                      <label className="w-36 text-sm font-medium text-gray-300 shrink-0 text-right">
-                        {p.label}
-                      </label>
-                      <div className="relative flex-1">
-                        <input
-                          type={showKey[p.name] ? 'text' : 'password'}
-                          value={keys[p.name] || ''}
-                          onChange={(e) => updateKey(p.name, e.target.value)}
-                          placeholder={p.placeholder}
-                          className="w-full px-3 py-2 pr-9 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => toggleShow(p.name)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
-                          tabIndex={-1}
-                        >
-                          {showKey[p.name] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </div>
+                    <ApiKeyRow
+                      key={p.name}
+                      ref={(handle) => { rowRefs.current[p.name] = handle }}
+                      provider={p}
+                      mode="bulk"
+                      showLabel
+                      value={keys[p.name] || ''}
+                      onChange={(v) => updateKey(p.name, v)}
+                    />
                   ))}
                 </div>
 
-                {/* Actions */}
-                <div className="mt-6 flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    disabled={saving}
-                    className="text-sm text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-50"
-                  >
-                    Skip for now
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={saving || filledCount === 0}
-                    className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 shadow-lg shadow-indigo-500/25"
-                  >
-                    {saving ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Saving...
-                      </>
-                    ) : (
-                      `Save & Continue${filledCount > 0 ? ` (${filledCount})` : ''}`
-                    )}
-                  </button>
+                {/* Actions — Улучшатели#5 P2·S — Skip promoted to ghost Button (equal visual weight)
+                    plus an explanation so users know they can configure later. */}
+                <div className="mt-6">
+                  <p className="text-xs text-cf-text-muted mb-3 text-center">
+                    You can add API keys later in Settings → API Keys.
+                  </p>
+                  <div className="flex items-center justify-end gap-3">
+                    <Button
+                      variant="ghost"
+                      size="lg"
+                      onClick={onClose}
+                      disabled={saving}
+                    >
+                      Skip for now
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="lg"
+                      onClick={handleSave}
+                      disabled={filledCount === 0}
+                      loading={saving}
+                    >
+                      {saving
+                        ? 'Saving...'
+                        : `Save & continue${filledCount > 0 ? ` (${filledCount})` : ''}`}
+                    </Button>
+                  </div>
                 </div>
               </Dialog.Panel>
             </Transition.Child>

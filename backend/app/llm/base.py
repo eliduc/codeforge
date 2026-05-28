@@ -1,6 +1,7 @@
 """Base LLM provider interface and common utilities."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,12 +68,23 @@ class BaseLLMProvider(ABC):
         max_tokens: int = 4096,
         system_prompt: str | None = None,
         thinking_effort: str | None = None,
+        request_timeout: float | None = None,
+        request_json_mode: bool = False,
         **kwargs: Any,
     ) -> LLMResponse | LLMError:
         """Generate a response from the LLM.
 
         thinking_effort: unified effort level across providers.
             Values: "low", "medium", "high", "max", or None (provider default).
+        request_timeout: per-request timeout in seconds for the HTTP call.
+            When provided, overrides the default client timeout for this request.
+            Typically set to agent_timeout / 2 to ensure the httpx call finishes
+            before the outer agent timeout fires.
+        request_json_mode: when True, ask the provider to produce JSON-only
+            output using provider-specific mechanisms (OpenAI response_format,
+            Anthropic prefill, Gemini response_mime_type). Providers that
+            don't support a JSON mode should ignore this flag — the system
+            prompt is still expected to steer the model toward JSON.
         """
         pass
 
@@ -80,6 +92,42 @@ class BaseLLMProvider(ABC):
     async def is_available(self) -> bool:
         """Check if the provider is available and configured."""
         pass
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        model: str,
+        on_chunk: Callable[[str], Awaitable[None]],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        system_prompt: str | None = None,
+        thinking_effort: str | None = None,
+        request_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> "LLMResponse | LLMError":
+        """Streaming variant — calls ``on_chunk`` for each text delta and
+        returns the final ``LLMResponse``.
+
+        Default implementation delegates to ``generate`` and emits the full
+        response as a single chunk. Providers that natively support streaming
+        (e.g. Anthropic) override this to yield real-time deltas.
+        """
+        response = await self.generate(
+            prompt=prompt,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            thinking_effort=thinking_effort,
+            request_timeout=request_timeout,
+            **kwargs,
+        )
+        if isinstance(response, LLMResponse) and response.content:
+            try:
+                await on_chunk(response.content)
+            except Exception:  # noqa: BLE001 - callback errors must not break the flow
+                pass
+        return response
 
     def calculate_cost(
         self, model: str, input_tokens: int, output_tokens: int, thinking_tokens: int = 0

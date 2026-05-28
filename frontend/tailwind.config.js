@@ -12,7 +12,7 @@ export default {
           'bg': 'var(--cf-bg)',
           'panel': 'var(--cf-panel)',
           'border': 'var(--cf-border)',
-          'primary': '#6366f1',
+          'primary': '#4f46e5',
           'secondary': '#8b5cf6',
           'success': '#10b981',
           'warning': '#f59e0b',

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Glass Crystal — WebGL</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#eee;font-family:system-ui,sans-serif;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  #panel{position:fixed;top:16px;right:16px;padding:14px 16px;background:rgba(10,8,20,.55);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(10px);border-radius:14px;font-size:12px;color:#cbd;line-height:1.6;z-index:10}
+  #panel h1{margin:0 0 6px;font-size:14px;letter-spacing:.06em;text-transform:uppercase;background:linear-gradient(90deg,#7ef0d4,#5fbcff,#ff5fa2);-webkit-background-clip:text;background-clip:text;color:transparent}
+  #panel label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px}
+  #panel input[type=range]{width:120px;accent-color:#7ef0d4}
+  .v{font-variant-numeric:tabular-nums;color:#fff;min-width:36px;text-align:right}
+  #hint{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);font-size:11px;color:rgba(255,255,255,.45);letter-spacing:.06em;text-transform:uppercase}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>Glass Crystal</h1>
+  <label>Refraction <input id="ior" type="range" min="1.0" max="2.2" step="0.01" value="1.45"><span class="v" id="vIor">1.45</span></label>
+  <label>Sharpness <input id="sharp" type="range" min="2" max="12" step="0.1" value="6"><span class="v" id="vSharp">6.0</span></label>
+  <label>Spin <input id="spin" type="range" min="0" max="2" step="0.01" value="0.6"><span class="v" id="vSpin">0.60</span></label>
+  <label>Hue <input id="hue" type="range" min="0" max="360" step="1" value="190"><span class="v" id="vHue">190</span></label>
+</div>
+<div id="hint">drag to rotate · scroll to zoom</div>
+<script>
+(()=>{
+const cv=document.getElementById('c');const gl=cv.getContext('webgl');if(!gl){document.body.innerHTML='<p style="color:#fff;padding:20px">WebGL not available</p>';return}
+function size(){cv.width=innerWidth*devicePixelRatio;cv.height=innerHeight*devicePixelRatio;gl.viewport(0,0,cv.width,cv.height)}
+size();addEventListener('resize',size);
+
+const vs=`attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}`;
+const fs=`precision highp float;
+uniform vec2 uRes;uniform float uTime;uniform vec3 uRot;uniform float uIor;uniform float uSharp;uniform float uHue;uniform float uZoom;
+// Rotation
+mat3 rotX(float a){float c=cos(a),s=sin(a);return mat3(1,0,0,0,c,-s,0,s,c);}
+mat3 rotY(float a){float c=cos(a),s=sin(a);return mat3(c,0,s,0,1,0,-s,0,c);}
+mat3 rotZ(float a){float c=cos(a),s=sin(a);return mat3(c,-s,0,s,c,0,0,0,1);}
+// Octahedron SDF (crystal-ish)
+float sdOct(vec3 p,float s){p=abs(p);float m=p.x+p.y+p.z-s;return m*0.57735;}
+// Smooth-min for blending
+float smin(float a,float b,float k){float h=clamp(.5+.5*(b-a)/k,0.,1.);return mix(b,a,h)-k*h*(1.-h);}
+float scene(vec3 p){
+  float d=sdOct(p,1.2);
+  // subtract a smaller octahedron rotated 45° to create faceting
+  float d2=sdOct(rotY(.7854)*rotX(.7854)*p,0.9);
+  d=smin(d,d2,0.04);
+  // ridges
+  d+=0.03*sin(uSharp*p.x)*sin(uSharp*p.y)*sin(uSharp*p.z);
+  return d;
+}
+vec3 normal(vec3 p){vec2 e=vec2(0.002,0);return normalize(vec3(scene(p+e.xyy)-scene(p-e.xyy),scene(p+e.yxy)-scene(p-e.yxy),scene(p+e.yyx)-scene(p-e.yyx)));}
+// HSL → RGB
+vec3 hsl(float h,float s,float l){vec3 k=mod(vec3(0,8,4)+h*12.,12.);vec3 a=clamp(min(k-3.,9.-k),0.,1.)*2.-1.;return l-s*min(l,1.-l)*max(a,vec3(-1.));}
+vec3 envSample(vec3 d){
+  // procedural environment: warm + cool gradient + spec stars
+  float u=atan(d.z,d.x)/6.2831+.5,v=d.y*.5+.5;
+  vec3 sky=mix(vec3(.02,.03,.08),vec3(.5,.7,1.),smoothstep(0.,1.,v));
+  vec3 ground=mix(vec3(.4,.2,.05),vec3(.05,.02,.01),v);
+  vec3 col=mix(ground,sky,smoothstep(.45,.55,v));
+  // streak of golden light
+  col+=vec3(1.,.85,.55)*pow(max(0.,1.-abs(v-.65)*6.),8.)*1.4;
+  // accent colour from hue param
+  vec3 hc=hsl(uHue/360.,.7,.55);
+  col+=hc*pow(max(0.,1.-abs(v-.35)*5.),10.)*0.6;
+  return col;
+}
+vec4 march(vec3 ro,vec3 rd){
+  float t=0.;
+  for(int i=0;i<96;i++){vec3 p=ro+rd*t;float d=scene(p);if(d<.001){return vec4(p,t);}t+=d*0.85;if(t>20.)break;}
+  return vec4(0.,0.,0.,-1.);
+}
+void main(){
+  vec2 uv=(gl_FragCoord.xy*2.-uRes)/min(uRes.x,uRes.y);
+  mat3 R=rotY(uRot.y)*rotX(uRot.x)*rotZ(uTime*0.2);
+  vec3 ro=vec3(0.,0.,-uZoom);
+  vec3 rd=normalize(vec3(uv,1.6));
+  vec4 hit=march(ro,rd);
+  vec3 col;
+  if(hit.w<0.){
+    col=envSample(rd)*0.5;
+  }else{
+    vec3 p=hit.xyz,n=normal(p);n=R*n;
+    vec3 wd=R*rd;
+    // Fresnel
+    float f=pow(1.-max(0.,-dot(rd,normal(p))),5.);
+    f=mix(.04,1.,f);
+    // Refracted ray (inside the crystal)
+    vec3 refr=refract(wd,n,1./uIor);
+    vec3 refl=reflect(wd,n);
+    // Sample environment for both
+    vec3 cRefr=envSample(refr);
+    vec3 cRefl=envSample(refl);
+    // Chromatic dispersion on refraction
+    vec3 refrR=refract(wd,n,1./(uIor-0.02));
+    vec3 refrB=refract(wd,n,1./(uIor+0.02));
+    vec3 disp=vec3(envSample(refrR).r,cRefr.g,envSample(refrB).b);
+    col=mix(disp,cRefl,f);
+    // Internal tint
+    vec3 tint=hsl(uHue/360.,.5,.6);
+    col=mix(col,col*tint,0.25);
+    // Spec highlight
+    vec3 L=normalize(vec3(.4,.7,-.6));
+    float s=pow(max(0.,dot(reflect(-L,n),-wd)),48.);
+    col+=vec3(1.,.95,.85)*s*1.4;
+    // Rim
+    float rim=pow(1.-max(0.,-dot(rd,n)),3.);
+    col+=hsl(uHue/360.+0.05,.8,.6)*rim*.6;
+  }
+  // Tone map
+  col=col/(col+1.);
+  col=pow(col,vec3(.85));
+  // Vignette
+  float vig=1.-length(uv)*0.35;
+  col*=vig;
+  gl_FragColor=vec4(col,1.);
+}`;
+function compile(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o));return o}
+const prog=gl.createProgram();gl.attachShader(prog,compile(gl.VERTEX_SHADER,vs));gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fs));gl.linkProgram(prog);gl.useProgram(prog);
+const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+const pLoc=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(pLoc);gl.vertexAttribPointer(pLoc,2,gl.FLOAT,false,0,0);
+const u={res:gl.getUniformLocation(prog,'uRes'),time:gl.getUniformLocation(prog,'uTime'),rot:gl.getUniformLocation(prog,'uRot'),ior:gl.getUniformLocation(prog,'uIor'),sharp:gl.getUniformLocation(prog,'uSharp'),hue:gl.getUniformLocation(prog,'uHue'),zoom:gl.getUniformLocation(prog,'uZoom')};
+
+let rotX=0.4,rotY=0,zoom=3.4,spin=0.6,dragging=false,lastX=0,lastY=0;
+cv.addEventListener('pointerdown',e=>{dragging=true;lastX=e.clientX;lastY=e.clientY});
+addEventListener('pointermove',e=>{if(!dragging)return;rotY+=(e.clientX-lastX)*.005;rotX+=(e.clientY-lastY)*.005;lastX=e.clientX;lastY=e.clientY});
+addEventListener('pointerup',()=>dragging=false);
+cv.addEventListener('wheel',e=>{zoom=Math.max(1.5,Math.min(8,zoom+e.deltaY*.003));e.preventDefault()},{passive:false});
+
+const $=id=>document.getElementById(id);
+let ior=1.45,sharp=6,hue=190;
+$('ior').oninput=e=>{ior=parseFloat(e.target.value);$('vIor').textContent=ior.toFixed(2)};
+$('sharp').oninput=e=>{sharp=parseFloat(e.target.value);$('vSharp').textContent=sharp.toFixed(1)};
+$('spin').oninput=e=>{spin=parseFloat(e.target.value);$('vSpin').textContent=spin.toFixed(2)};
+$('hue').oninput=e=>{hue=parseFloat(e.target.value);$('vHue').textContent=hue.toFixed(0)};
+
+let t0=performance.now();
+function frame(){requestAnimationFrame(frame);const t=(performance.now()-t0)*.001;
+  if(!dragging)rotY+=spin*.008;
+  gl.uniform2f(u.res,cv.width,cv.height);gl.uniform1f(u.time,t);gl.uniform3f(u.rot,rotX,rotY,0);
+  gl.uniform1f(u.ior,ior);gl.uniform1f(u.sharp,sharp);gl.uniform1f(u.hue,hue);gl.uniform1f(u.zoom,zoom);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+frame();
+})();
+</script>
+</body>
+</html>

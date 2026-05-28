@@ -1,0 +1,8 @@
+# Development / CI-only dependencies. Kept separate from requirements.txt so
+# they are not pulled into the production image.
+#
+# KAO#Full-C-2 M2 — pip-audit is required by tests/test_kao_full_deps.py to
+# scan the backend dependency tree for known CVEs. The test imports the
+# package directly (via `python -m pip_audit`) so a CLI-shim on PATH is not
+# required, but the module must be installable in the test runner image.
+pip-audit>=2.7

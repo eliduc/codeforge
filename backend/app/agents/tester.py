@@ -169,11 +169,14 @@ class TesterAgent(BaseAgent):
             f"You are Tester Agent #{self.agent_index + 1}, an expert code reviewer. "
             f"You meticulously analyze code for bugs, security issues, and specification compliance. "
             f"You are fair but thorough - you don't miss real issues, but you don't invent fake ones. "
-            f"You ALWAYS respond with valid JSON only, no other text."
+            f"You ALWAYS respond with valid JSON only, no other text.\n\n"
+            f"CRITICAL: Your response MUST be ONLY a JSON object — no markdown fences, "
+            f"no preface, no explanation. Start with {{ and end with }}. "
+            f"The first character of your response MUST be {{."
         )
 
-        # Call LLM
-        response = await self._call_llm(prompt, system_prompt)
+        # Call LLM with provider-native JSON mode where supported
+        response = await self._call_llm(prompt, system_prompt, request_json_mode=True)
 
         if isinstance(response, LLMError):
             return self._create_result(response)
@@ -183,17 +186,52 @@ class TesterAgent(BaseAgent):
             parsed = self.parse_response(response.content)
             return self._create_result(response, parsed)
         except Exception as e:
-            logger.warning(f"Failed to parse tester response: {e}. Creating fallback result.")
-            # Instead of failing, create a minimal valid audit with 0 issues
-            # so the workflow can continue. The tester's text is still available.
+            # First parse failed even after fix_json. Retry ONCE with a
+            # stricter follow-up prompt before falling back to an empty audit.
+            logger.info(
+                f"Tester first parse failed ({e}); retrying once with stricter JSON-only prompt."
+            )
+            retry_prompt = (
+                "Your previous response was not valid JSON. Output ONLY the JSON object now, "
+                "starting with {. No prose, no markdown fences, no explanation. Repeat the "
+                "audit for the same code/specification context.\n\n"
+                + prompt
+            )
+            retry_response = await self._call_llm(
+                retry_prompt, system_prompt, request_json_mode=True
+            )
+
+            if not isinstance(retry_response, LLMError):
+                try:
+                    parsed = self.parse_response(retry_response.content)
+                    logger.info("Tester JSON parse succeeded on retry.")
+                    return self._create_result(retry_response, parsed)
+                except Exception as retry_err:
+                    logger.warning(
+                        f"Tester JSON parse failed on both attempts: "
+                        f"first={e}; retry={retry_err}. Creating fallback result."
+                    )
+            else:
+                logger.warning(
+                    f"Tester retry LLM call failed: {retry_response.message}. "
+                    f"Falling back after first parse error: {e}."
+                )
+
+            # Both attempts failed (or retry LLM errored): use empty audit so
+            # the workflow can continue. The tester's raw text is preserved.
             fallback_parsed = {
-                "overall_assessment": f"[Parse error — raw response available] {response.content[:500]}",
+                "overall_assessment": (
+                    "LLM failed to produce parseable JSON. "
+                    f"Raw response (truncated): {response.content[:500]}"
+                ),
                 "spec_compliance_score": 5,
                 "correctness_score": 5,
                 "quality_score": 5,
                 "issues": [],
                 "positive_aspects": [],
                 "test_cases_needed": [],
+                "audit_passed": False,
+                "comments": "LLM failed to produce parseable JSON",
             }
             return self._create_result(response, fallback_parsed)
 
@@ -232,6 +270,11 @@ class TesterAgent(BaseAgent):
             "positive_aspects": result.get("positive_aspects", []),
             "test_cases_needed": result.get("test_cases_needed", []),
         }
+        # Preserve optional pass/fail fields if the LLM provided them.
+        if "audit_passed" in result:
+            normalized["audit_passed"] = result["audit_passed"]
+        if "comments" in result:
+            normalized["comments"] = result["comments"]
 
         # Normalize issues
         for issue in result.get("issues", []):

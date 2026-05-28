@@ -9,6 +9,8 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Eye,
+  Check,
 } from 'lucide-react'
 import notify from '../common/StyledToast'
 import { enhanceSession } from '../../services/api'
@@ -146,6 +148,13 @@ export default function EnhancerPanel({
       .every(a => a.provider && a.model) &&
     state.summarizer.provider && state.summarizer.model
 
+  // Preview / dry-run state. The list of enabled-enhancer keys captured at
+  // preview time is stored so the user can later "Apply" exactly what they
+  // previewed without re-toggling.
+  const [previewMode, setPreviewMode] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewedAgents, setPreviewedAgents] = useState<string[]>([])
+
   const handleEnhance = async () => {
     if (!canEnhance) return
     setEnhancerStatus('running')
@@ -156,11 +165,37 @@ export default function EnhancerPanel({
         summarizer: state.summarizer,
       })
       notify.success(result.message)
+      // Collapse the panel to show "Implementing..." in the header
+      setExpanded(false)
+      setPreviewMode(false)
       // The new session ID will come via WebSocket event
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Enhancement failed'
       notify.error(msg)
       setEnhancerStatus('error')
+    }
+  }
+
+  // Preview = dry-run: show what *would* be enhanced without committing.
+  // TODO(backend): the /api/sessions/{id}/enhance endpoint does not yet
+  // support a `?preview=true` query parameter. Once it does, switch this
+  // handler to call enhanceSession() with the preview flag so the user can
+  // see real per-agent suggestions WITHOUT triggering a new session. For
+  // now we surface a local dry-run summary (which agents are enabled and
+  // their recommendations) so the user can sanity-check before applying.
+  const handlePreview = async () => {
+    if (!canEnhance) return
+    setPreviewing(true)
+    try {
+      const enabled = [state.design, state.functionality, state.security].filter(e => e.enabled)
+      setPreviewedAgents(enabled.map(e => e.type))
+      setPreviewMode(true)
+      notify.info('Preview ready — review below, then click Apply to run.')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Preview failed'
+      notify.error(msg)
+    } finally {
+      setPreviewing(false)
     }
   }
 
@@ -320,30 +355,98 @@ export default function EnhancerPanel({
             </div>
           </div>
 
-          {/* Enhance Button */}
-          <button
-            onClick={handleEnhance}
-            disabled={!canEnhance}
-            className={`
-              w-full py-2.5 rounded-lg font-medium text-sm transition-all flex items-center justify-center gap-2
-              ${canEnhance
-                ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white shadow-lg shadow-purple-500/25'
-                : 'bg-gray-800 text-gray-500 cursor-not-allowed'
-              }
-            `}
-          >
-            {enhancerStatus === 'running' ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Enhancing...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4" />
-                Enhance
-              </>
-            )}
-          </button>
+          {/* Preview panel - shown after a dry-run has been requested */}
+          {previewMode && previewedAgents.length > 0 && (
+            <div className="rounded-lg border border-blue-500/40 bg-blue-500/5 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <Eye className="w-4 h-4 text-blue-400" />
+                <span className="text-sm font-medium text-blue-300">Preview (dry-run)</span>
+                <span className="ml-auto text-xs text-blue-400/80">No session created yet</span>
+              </div>
+              <p className="text-xs text-gray-400">
+                The following enhancer agents will run when you click Apply:
+              </p>
+              <ul className="text-xs text-gray-300 space-y-1">
+                {previewedAgents.map(agentType => {
+                  const key = typeToKey[agentType] as keyof typeof enhancerMeta
+                  const meta = enhancerMeta[key]
+                  if (!meta) return null
+                  const Icon = meta.icon
+                  const recs = (state[key] as EnhancerAgentConfig).recommendations || ''
+                  return (
+                    <li key={agentType} className="flex items-start gap-2">
+                      <Icon className={`w-3.5 h-3.5 mt-0.5 ${meta.text}`} />
+                      <div className="flex-1">
+                        <span className={meta.text}>{meta.label}</span>
+                        {recs && (
+                          <span className="text-gray-500"> — {recs.slice(0, 80)}{recs.length > 80 ? '…' : ''}</span>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
+          {/* Action buttons: Preview (dry-run) + Enhance / Apply */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={handlePreview}
+              disabled={!canEnhance || previewing}
+              className={`
+                py-2.5 rounded-lg font-medium text-sm transition-all flex items-center justify-center gap-2
+                ${canEnhance && !previewing
+                  ? 'bg-blue-600/80 hover:bg-blue-500 text-white border border-blue-400/40'
+                  : 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700'
+                }
+              `}
+              title="Show what would change without creating a new session"
+            >
+              {previewing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Previewing...
+                </>
+              ) : (
+                <>
+                  <Eye className="w-4 h-4" />
+                  Preview Enhancements
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={handleEnhance}
+              disabled={!canEnhance}
+              className={`
+                py-2.5 rounded-lg font-medium text-sm transition-all flex items-center justify-center gap-2
+                ${canEnhance
+                  ? previewMode
+                    ? 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white shadow-lg shadow-emerald-500/25'
+                    : 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white shadow-lg shadow-purple-500/25'
+                  : 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                }
+              `}
+            >
+              {enhancerStatus === 'running' ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Enhancing...
+                </>
+              ) : previewMode ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  Apply
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  Enhance
+                </>
+              )}
+            </button>
+          </div>
 
           {!canEnhance && sessionStatus !== 'completed' && (
             <p className="text-xs text-gray-500 text-center">

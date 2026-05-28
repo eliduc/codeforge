@@ -45,7 +45,7 @@ class OllamaProvider(BaseLLMProvider):
         super().__init__(api_key, base_url)
         self.base_url = base_url or "http://localhost:11434"
         self._available_models: list[str] | None = None
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=30.0))
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -92,9 +92,12 @@ class OllamaProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         system_prompt: str | None = None,
+        thinking_effort: str | None = None,
+        request_timeout: float | None = None,
+        request_json_mode: bool = False,
         **kwargs: Any,
     ) -> LLMResponse | LLMError:
-        """Generate a response using Ollama."""
+        """Generate a response using Ollama (thinking_effort is accepted but ignored for local models)."""
         start_time = time.time()
 
         try:
@@ -107,13 +110,21 @@ class OllamaProvider(BaseLLMProvider):
                     "num_predict": max_tokens,
                 },
             }
+            # Ollama supports a top-level "format": "json" for JSON-mode output.
+            if request_json_mode:
+                request_body["format"] = "json"
 
             if system_prompt:
                 request_body["system"] = system_prompt
 
+            # Per-request timeout override
+            post_kwargs: dict[str, Any] = {"json": request_body}
+            if request_timeout is not None:
+                post_kwargs["timeout"] = httpx.Timeout(request_timeout, connect=30.0)
+
             response = await self._client.post(
                 f"{self.base_url}/api/generate",
-                json=request_body,
+                **post_kwargs,
             )
 
             latency_ms = int((time.time() - start_time) * 1000)

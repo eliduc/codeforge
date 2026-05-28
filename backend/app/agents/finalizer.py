@@ -13,6 +13,10 @@ from app.utils.json_utils import fix_json as _shared_fix_json
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of characters of code shown in the finalizer prompt per version.
+# The full code is preserved by the system; this only limits what is sent to the LLM.
+MAX_CODE_DISPLAY_CHARS = 50000
+
 
 # Default prompt template for finalizer agent
 DEFAULT_FINALIZER_PROMPT = """You are an expert software architect tasked with selecting the best code implementation and generating final documentation.
@@ -44,7 +48,7 @@ DEFAULT_FINALIZER_PROMPT = """You are an expert software architect tasked with s
 ```{{ language }}
 {{ version.code[:50000] }}{% if version.code|length > 50000 %}
 
-... [showing first 50000 of {{ version.code|length }} chars — the COMPLETE code is available to the system and will be used as-is for the selected coder]
+... [TRUNCATED: showing first 50000 of {{ version.code|length }} chars. Rely on test scores and summary, not raw code. The COMPLETE code is preserved by the system and will be used as-is for the selected coder.]
 {% endif %}
 ```
 
@@ -332,10 +336,17 @@ class FinalizerAgent(BaseAgent):
                 execution_results=execution_results,
             )
 
-        # Log code sizes and prompt length
+        # Log code sizes and prompt length; warn loudly on truncation
         for v in versions:
             code_len = len(v.get("code", ""))
-            logger.info(f"Finalizer: Coder {v.get('coder_index', 0) + 1} code = {code_len} chars")
+            coder_idx = v.get("coder_index", 0)
+            logger.info(f"Finalizer: Coder {coder_idx + 1} code = {code_len} chars")
+            if code_len > MAX_CODE_DISPLAY_CHARS:
+                logger.warning(
+                    f"Finalizer: code truncated from {code_len} to {MAX_CODE_DISPLAY_CHARS} chars "
+                    f"for coder {coder_idx} — full code is preserved server-side; LLM sees a partial view. "
+                    f"Selection should rely on test scores and summary, not raw code."
+                )
         logger.info(f"Finalizer: prompt length = {len(prompt)} chars (~{len(prompt) // 4} tokens est.)")
 
         system_prompt = (
@@ -369,7 +380,8 @@ class FinalizerAgent(BaseAgent):
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 cost_usd=self.llm_router.calculate_cost(
-                    self.provider, self.model, response.input_tokens, response.output_tokens
+                    self.provider, self.model, response.input_tokens, response.output_tokens,
+                    getattr(response, 'thinking_tokens', 0) or 0,
                 ),
                 latency_ms=response.latency_ms,
                 raw_response=response.raw_response,
@@ -491,18 +503,7 @@ class FinalizerAgent(BaseAgent):
 
             cleaned_lines.append(line)
 
-        result = '\n'.join(cleaned_lines).strip()
-
-        # Final safety: detect trailing JSON/YAML blocks after code ends
-        # Look for raw JSON object/array at the end (common: config templates)
-        json_tail = re.search(r'\n(\{[\s\S]*\}|\[[\s\S]*\])\s*$', result)
-        if json_tail:
-            tail_text = json_tail.group(1).strip()
-            # Check if it looks like a standalone JSON block (not code)
-            if tail_text.startswith('{') or tail_text.startswith('['):
-                result = result[:json_tail.start()].rstrip()
-
-        return result
+        return '\n'.join(cleaned_lines).strip()
 
     @staticmethod
     def _is_source_file(path: str) -> bool:

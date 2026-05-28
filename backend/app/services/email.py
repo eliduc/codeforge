@@ -3,6 +3,7 @@
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape as html_escape
 
 import aiosmtplib
 
@@ -103,7 +104,7 @@ async def send_access_request_email(requester_email: str, admin_email: str) -> N
         )
         return
 
-    subject = "Запрос на внесение в белый список"
+    subject = "CodeForge — Access Request"
     html_body = f"""\
 <html>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -112,7 +113,7 @@ async def send_access_request_email(requester_email: str, admin_email: str) -> N
               border-radius: 12px; padding: 32px;">
     <h2 style="color: #818cf8; margin-bottom: 16px;">CodeForge — Access Request</h2>
     <p style="color: #e2e8f0; margin-bottom: 8px;">
-      User <strong style="color: #f1f5f9;">{requester_email}</strong> is requesting
+      User <strong style="color: #f1f5f9;">{html_escape(requester_email)}</strong> is requesting
       access to CodeForge.
     </p>
     <p style="color: #94a3b8; font-size: 14px; margin-top: 16px;">

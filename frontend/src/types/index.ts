@@ -9,16 +9,19 @@ export interface PaginatedResponse<T> {
 }
 
 // Enums
-export type SessionStatus = 
-  | 'created' 
-  | 'running' 
-  | 'paused' 
-  | 'completed' 
-  | 'failed' 
+export type SessionStatus =
+  | 'created'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
   | 'cancelled'
   | 'awaiting_enhancement'
   | 'enhancing'
-  | 'awaiting_enhancement_review';
+  | 'awaiting_enhancement_review'
+  // КАО#VR-Wave1 Frontend — Visual Review: new pause-point status while the
+  // session is waiting on user scoring of candidate code versions.
+  | 'awaiting_visual_review';
 
 export type AgentType = 'coder' | 'tester' | 'summarizer' | 'finalizer';
 
@@ -57,6 +60,8 @@ export interface AgentConfig {
   prompt_template_id?: string;
   custom_prompt?: string | null;
   thinking_effort?: string | null;
+  temperature?: number;
+  max_tokens?: number;
   enabled: boolean;
   created_at: string;
 }
@@ -136,11 +141,16 @@ export interface Session {
   max_fix_attempts: number;
   auto_install_deps: boolean;
   auto_continue: boolean;
+  agent_timeout: number;
+  request_timeout: number;
   parent_session_id?: string;
   enhancement_round: number;
   created_at: string;
   updated_at: string;
   agent_configs: AgentConfig[];
+  // Free-form per-session settings (e.g. { streaming: true } to enable
+  // agent_streaming WebSocket events). Server stores as JSON.
+  settings?: Record<string, unknown> | null;
 }
 
 export interface SessionListItem {
@@ -152,6 +162,8 @@ export interface SessionListItem {
   language: string;
   parent_session_id?: string;
   enhancement_round: number;
+  total_cost?: number;
+  total_tokens?: number;
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +178,41 @@ export interface CodeVersion {
   analysis?: string;
   status: AgentStatus;
   created_at: string;
+}
+
+// КАО#VR-Wave1 Frontend — Visual Review
+// Screenshot still associated with a CodeVersion. The backend renders each
+// candidate code version in a headless browser, captures N frames over time,
+// and exposes them here so the user can scrub through what each candidate
+// actually does on screen before scoring.
+export interface CodeVersionScreenshot {
+  id: string;
+  code_version_id: string;
+  /** 0-based index of this frame inside the candidate's screenshot strip. */
+  frame_index: number;
+  /** Seconds offset from page load when this frame was captured. */
+  t_seconds: number;
+  /** URL the frontend can use directly in <img src>. */
+  image_url: string;
+  width: number;
+  height: number;
+}
+
+// КАО#VR-Wave1 Frontend — Visual Review
+// One candidate (CodeVersion) shown side-by-side with its peers. Optional
+// scores come from the user (slider 0-10) and/or the vision-LLM auto-scorer
+// that the backend may run in parallel.
+export interface VisualReviewCandidate {
+  code_version_id: string;
+  coder_index: number;
+  llm_model: string;
+  screenshots: CodeVersionScreenshot[];
+  /** User-provided score 0-10 (or null while unscored). */
+  user_score?: number | null;
+  /** Optional vision-LLM auto-score for comparison. */
+  vision_llm_score?: number | null;
+  /** Tester signal — total issues across audits for this candidate. */
+  issues_count?: number;
 }
 
 export interface Audit {
@@ -261,8 +308,22 @@ export interface PromptTemplate {
   agent_type: AgentType;
   template_text: string;
   is_default: boolean;
+  description?: string | null;
+  current_version?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface PromptTemplateVersion {
+  id: number;
+  template_id: number;
+  version_number: number;
+  name: string;
+  agent_type: string;
+  template_text: string;
+  description?: string | null;
+  change_note?: string | null;
+  created_at: string;
 }
 
 // WebSocket Events
@@ -311,6 +372,9 @@ export interface CreateSessionRequest {
   max_fix_attempts?: number;
   auto_install_deps?: boolean;
   agent_timeout?: number;
+  request_timeout?: number;
+  // Free-form per-session settings (e.g. { streaming: true })
+  settings?: Record<string, unknown> | null;
   // Agent configs
   agent_configs?: Partial<AgentConfig>[];
   // Simplified config options
@@ -432,6 +496,12 @@ export interface CuratedSuggestion {
   priority: string;
   description: string;
   implementation?: string;
+  /** VR-39 — files / git-repo attachments authored by the user for THIS
+      specific enhancement. Merged into the child session's attachments
+      bag so coders see the referenced material when implementing. Mirrors
+      the Specification-level attachments shape so we can reuse the
+      existing uploadFiles / fetchRepo APIs. */
+  attachments?: AttachmentInfo[];
 }
 
 export interface ApplyEnhancementsResponse {

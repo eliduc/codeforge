@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mandelbulb — Strange Attractor</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#ddd;font-family:system-ui,sans-serif;overflow:hidden}
+  canvas{display:block;position:absolute;inset:0;width:100vw;height:100vh}
+  #orbits{pointer-events:none}
+  #ui{position:fixed;top:10px;left:10px;background:rgba(15,15,22,.85);
+       padding:10px 12px;border-radius:10px;font-size:12px;max-width:300px;z-index:10;
+       max-height:95vh;overflow:auto}
+  #ui h1{font-size:13px;margin:0 0 6px;color:#9cf}
+  #ui h2{font-size:11px;margin:8px 0 2px;color:#9af;text-transform:uppercase;letter-spacing:1px}
+  #ui label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:3px 0}
+  #ui input[type=range]{flex:1}
+  #ui input[type=number],#ui select{background:#222;color:#eee;border:1px solid #333;border-radius:4px;padding:2px;width:80px}
+  #ui button{margin-top:6px;width:100%;padding:6px;background:#27406b;border:none;color:#fff;border-radius:6px;cursor:pointer;font-weight:bold}
+  #ui button:hover{background:#365a93}
+  #info{position:fixed;bottom:10px;left:10px;font-size:12px;color:#9af;background:rgba(0,0,0,.55);padding:6px 10px;border-radius:6px;z-index:10}
+  .row{display:flex;gap:6px}.row>*{flex:1}
+  .chk{display:flex;align-items:center;gap:6px}
+</style>
+</head>
+<body>
+<canvas id="surface"></canvas>
+<canvas id="orbits"></canvas>
+
+<div id="ui">
+  <h1>MANDELBULB ATTRACTOR</h1>
+  <div class="row">
+    <label>n₀ <input type="number" id="nStart" value="4" min="2" max="50"></label>
+    <label>n₁ <input type="number" id="nEnd" value="20" min="2" max="50"></label>
+  </div>
+  <div class="row">
+    <label>n→ <input type="number" id="nTarget" placeholder="any" min="2" max="200" step="0.1"></label>
+    <button id="nGo">Morph</button>
+  </div>
+  <label>Palette
+    <select id="palette">
+      <option value="0">Aurora</option><option value="1">Magma</option>
+      <option value="2">Ocean</option><option value="3">Emerald</option>
+      <option value="4">Solar</option><option value="5">Violet</option>
+      <option value="6">Ice</option><option value="7">Mono</option>
+    </select>
+  </label>
+  <label>Lighting style
+    <select id="ltype">
+      <option value="0">Soft warm</option>
+      <option value="1">Cold sharp</option>
+      <option value="2">Studio dual</option>
+    </select>
+  </label>
+  <label>Quality
+    <select id="quality">
+      <option value="0" selected>Performance</option>
+      <option value="1">Balanced</option>
+      <option value="2">Maximum</option>
+    </select>
+  </label>
+
+  <h2>Light 1 (key)</h2>
+  <label>X <input type="range" id="lx" min="-2" max="2" step="0.05" value="1.2"></label>
+  <label>Y <input type="range" id="ly" min="-2" max="2" step="0.05" value="1.4"></label>
+  <label>Z <input type="range" id="lz" min="-2" max="2" step="0.05" value="0.8"></label>
+  <label>Intensity <input type="range" id="li" min="0" max="3" step="0.05" value="1.6"></label>
+  <label>Temp (K) <input type="range" id="ltemp" min="2000" max="10000" step="100" value="5500"></label>
+
+  <h2>Light 2 (rim)</h2>
+  <label class="chk"><input type="checkbox" id="l2on" checked> Enable</label>
+  <label>X <input type="range" id="l2x" min="-2" max="2" step="0.05" value="-1.0"></label>
+  <label>Y <input type="range" id="l2y" min="-2" max="2" step="0.05" value="0.4"></label>
+  <label>Z <input type="range" id="l2z" min="-2" max="2" step="0.05" value="-1.2"></label>
+  <label>Intensity <input type="range" id="l2i" min="0" max="3" step="0.05" value="0.9"></label>
+  <label>Temp (K) <input type="range" id="l2temp" min="2000" max="10000" step="100" value="8500"></label>
+
+  <h2>Common</h2>
+  <label>Softness <input type="range" id="lsoft" min="0" max="1" step="0.02" value="0.55"></label>
+  <label class="chk"><input type="checkbox" id="showOrbits" checked> Trajectories</label>
+  <button id="restart">▶ Restart</button>
+  <div style="margin-top:4px;opacity:.7;font-size:11px">Drag = rotate · Wheel = zoom</div>
+</div>
+
+<div id="info">initializing…</div>
+
+<script>
+(function(){
+"use strict";
+function boot(){
+const surf=document.getElementById('surface');
+const orbCv=document.getElementById('orbits');
+const info=document.getElementById('info');
+let gl=null;
+try{ gl=surf.getContext('webgl',{antialias:false,powerPreference:'high-performance'})
+      || surf.getContext('experimental-webgl'); }catch(e){}
+if(!gl){info.textContent='WebGL not available';return;}
+const octx=orbCv.getContext('2d');
+
+let lost=false;
+surf.addEventListener('webglcontextlost',e=>{e.preventDefault();lost=true;info.textContent='context lost — restoring…';},false);
+surf.addEventListener('webglcontextrestored',()=>{ lost=false; initGL(); resize(); info.textContent='restored'; },false);
+
+const vertSrc=`attribute vec2 aPos;void main(){gl_Position=vec4(aPos,0.0,1.0);}`;
+let pp='precision mediump float;';
+try{const hf=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT); if(hf&&hf.precision>0)pp='precision highp float;';}catch(e){}
+
+const fragSrc=pp+`
+uniform vec2 uRes;
+uniform float uPower,uIters,uScale,uLightI,uLightI2,uSoftK,uSpecPow;
+uniform vec3 uCamPos,uCamTarget,uLightDir,uLightCol,uLightDir2,uLightCol2;
+uniform int uLightType,uPalette,uL2On,uRMSteps,uDEIters,uShadowSteps,uAOSteps;
+
+vec3 pal(float t,int id){
+  if(id==0)return 0.5+0.5*cos(6.2831*(vec3(0.0,0.33,0.67)+t)+vec3(0.0,0.8,1.4));
+  if(id==1)return 0.5+0.5*cos(6.2831*(vec3(0.0,0.15,0.20)+t)+vec3(0.0,0.6,1.0));
+  if(id==2)return 0.5+0.5*cos(6.2831*(vec3(0.30,0.50,0.70)+t)+vec3(1.0,1.5,2.0));
+  if(id==3)return 0.5+0.5*cos(6.2831*(vec3(0.20,0.55,0.30)+t)+vec3(2.0,1.0,0.5));
+  if(id==4)return 0.5+0.5*cos(6.2831*(vec3(0.0,0.10,0.20)+t)+vec3(0.0,1.0,2.5));
+  if(id==5)return 0.5+0.5*cos(6.2831*(vec3(0.5,0.25,0.7)+t)+vec3(3.0,4.0,2.0));
+  if(id==6)return 0.5+0.5*cos(6.2831*(vec3(0.6,0.7,0.8)+t)+vec3(1.0,1.2,1.4));
+  return vec3(t);
+}
+vec2 deBulb(vec3 pos,float power,int maxI,float blend){
+  vec3 z=pos; float dr=1.0,r=0.0,trap=1e10;
+  vec3 zP=z; float drP=dr;
+  for(int i=0;i<12;i++){
+    if(i>=maxI)break;
+    zP=z; drP=dr;
+    r=length(z); if(r>2.0)break;
+    float th=acos(clamp(z.z/max(r,1e-8),-1.0,1.0));
+    float ph=atan(z.y,z.x);
+    dr=pow(r,power-1.0)*power*dr+1.0;
+    float zr=pow(r,power);
+    th*=power; ph*=power;
+    z=zr*vec3(sin(th)*cos(ph),sin(th)*sin(ph),cos(th))+pos;
+    trap=min(trap,dot(z,z));
+  }
+  vec3 zM=mix(zP,z,blend); float drM=mix(drP,dr,blend);
+  float rM=length(zM);
+  return vec2(0.5*log(max(rM,1e-6))*rM/max(drM,1e-6),trap);
+}
+vec2 sceneDE(vec3 p){
+  p/=uScale;
+  int mi=int(floor(uIters)); if(mi<1)mi=1; if(mi>uDEIters)mi=uDEIters;
+  float bl=fract(uIters); if(uIters>=float(uDEIters))bl=1.0;
+  vec2 r=deBulb(p,uPower,mi+1,bl); r.x*=uScale; return r;
+}
+vec3 calcN(vec3 p){
+  float e=0.0012; vec2 h=vec2(1.0,-1.0)*0.5773;
+  return normalize(h.xyy*sceneDE(p+h.xyy*e).x+h.yyx*sceneDE(p+h.yyx*e).x
+                  +h.yxy*sceneDE(p+h.yxy*e).x+h.xxx*sceneDE(p+h.xxx*e).x);
+}
+float shadow(vec3 ro,vec3 rd,float k){
+  float res=1.0,t=0.02;
+  for(int i=0;i<10;i++){
+    if(i>=uShadowSteps)break;
+    float h=sceneDE(ro+rd*t).x;
+    if(h<0.0008)return 0.0;
+    res=min(res,k*h/t);
+    t+=clamp(h,0.012,0.2);
+    if(t>2.5)break;
+  }
+  return clamp(res,0.0,1.0);
+}
+float ao(vec3 p,vec3 n){
+  float occ=0.0,sca=1.0;
+  for(int i=0;i<4;i++){
+    if(i>=uAOSteps)break;
+    float h=0.01+0.14*float(i)/3.0;
+    occ+=(h-sceneDE(p+n*h).x)*sca; sca*=0.85;
+  }
+  return clamp(1.0-1.5*occ,0.0,1.0);
+}
+void main(){
+  vec2 uv=(gl_FragCoord.xy-0.5*uRes)/uRes.y;
+  vec3 ro=uCamPos;
+  vec3 cw=normalize(uCamTarget-ro);
+  vec3 up=abs(cw.y)>0.95?vec3(0.0,0.0,1.0):vec3(0.0,1.0,0.0);
+  vec3 cu=normalize(cross(cw,up));
+  vec3 cv=normalize(cross(cu,cw));
+  vec3 rd=normalize(uv.x*cu+uv.y*cv+1.6*cw);
+  float t=0.0,trap=0.0; bool hit=false;
+  int steps=uRMSteps;
+  for(int i=0;i<160;i++){
+    if(i>=steps)break;
+    vec2 r=sceneDE(ro+rd*t);
+    if(r.x<0.0007*t){hit=true;trap=r.y;break;}
+    t+=r.x*0.9; if(t>5.0)break;
+  }
+  vec3 bg=mix(vec3(0.015,0.02,0.04),vec3(0.0),length(uv));
+  vec3 col=bg;
+  if(hit){
+    vec3 p=ro+rd*t,n=calcN(p);
+    float occ=ao(p,n);
+    vec3 ldir=normalize(uLightDir);
+    vec3 ldir2=normalize(uLightDir2);
+    vec3 keyCol=uLightCol, key2Col=uLightCol2;
+    vec3 fillCol=vec3(.25,.30,.42); float fillMul=1.0;
+    float specPow=uSpecPow;
+    if(uLightType==0){keyCol*=vec3(1.0,0.85,0.6); fillCol=vec3(.30,.28,.36); fillMul=1.2;}
+    else if(uLightType==1){keyCol*=vec3(0.75,0.9,1.2); fillCol=vec3(.10,.15,.25); fillMul=0.6; specPow*=1.6;}
+    else {fillCol=vec3(.30,.40,.65); fillMul=0.9;}
+
+    float diff=max(dot(n,ldir),0.0);
+    float sh=shadow(p+n*0.003,ldir,uSoftK);
+    vec3 hv=normalize(ldir-rd);
+    float spec=(diff>0.0)?pow(max(dot(n,hv),0.0),specPow):0.0;
+
+    float diff2=0.0,spec2=0.0,sh2=1.0;
+    if(uL2On==1){
+      diff2=max(dot(n,ldir2),0.0);
+      sh2=shadow(p+n*0.003,ldir2,uSoftK*0.6);
+      vec3 hv2=normalize(ldir2-rd);
+      spec2=(diff2>0.0)?pow(max(dot(n,hv2),0.0),specPow*0.7):0.0;
+    }
+    float tt=clamp(sqrt(trap)*0.7+uPower*0.03,0.0,1.0);
+    vec3 base=pal(tt,uPalette);
+    float fres=pow(1.0-max(dot(n,-rd),0.0),3.0);
+    vec3 lit=base*(fillCol*fillMul*(0.35+0.65*occ)
+              +keyCol*diff*sh*uLightI
+              +key2Col*diff2*sh2*uLightI2)
+            +keyCol*spec*sh*0.7*uLightI
+            +key2Col*spec2*sh2*0.5*uLightI2
+            +base*fres*0.4;
+    lit*=exp(-0.035*t);
+    col=lit;
+  }
+  col=col/(1.0+col);
+  col=pow(col,vec3(1.0/2.2));
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+let prog,U,buf,aPos,MAX_VP=[4096,4096];
+function compile(t,s){
+  const sh=gl.createShader(t); gl.shaderSource(sh,s); gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){info.textContent='Shader err: '+gl.getShaderInfoLog(sh); throw new Error('shader');}
+  return sh;
+}
+function initGL(){
+  const vs=compile(gl.VERTEX_SHADER,vertSrc), fs=compile(gl.FRAGMENT_SHADER,fragSrc);
+  prog=gl.createProgram(); gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){info.textContent='link err';throw new Error('link');}
+  gl.useProgram(prog);
+  buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  aPos=gl.getAttribLocation(prog,'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+  U={};
+  ['uRes','uPower','uIters','uScale','uCamPos','uCamTarget','uLightDir','uLightCol',
+   'uLightDir2','uLightCol2','uLightI','uLightI2','uSoftK','uSpecPow','uLightType',
+   'uPalette','uL2On','uRMSteps','uDEIters','uShadowSteps','uAOSteps'].forEach(k=>U[k]=gl.getUniformLocation(prog,k));
+  try{const m=gl.getParameter(gl.MAX_VIEWPORT_DIMS); if(m&&m[0]>0)MAX_VP=[m[0],m[1]];}catch(e){}
+}
+try{ initGL(); }catch(e){ return; }
+
+let isSoftware=false;
+try{
+  const dbg=gl.getExtension('WEBGL_debug_renderer_info');
+  if(dbg){
+    const r=String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)||'').toLowerCase();
+    if(r.indexOf('swiftshader')>=0||r.indexOf('software')>=0||r.indexOf('llvmpipe')>=0||(r.indexOf('angle')>=0&&r.indexOf('basic')>=0))isSoftware=true;
+  } else {
+    isSoftware=true;
+  }
+}catch(e){ isSoftware=true; }
+
+let resScale=0.04, RW=2,RH=2, qualityMode=0;
+let framesRendered=0;
+function pixelCap(){
+  if(isSoftware) return 200*200;
+  return qualityMode===0?420*420:qualityMode===1?900*900:1600*1600;
+}
+function rmSteps(){
+  if(framesRendered<5) return 8;
+  if(framesRendered<15) return 20;
+  if(isSoftware) return 35;
+  return qualityMode===0?55:qualityMode===1?95:140;
+}
+function deIters(){
+  if(framesRendered<5) return 3;
+  if(isSoftware) return 6;
+  return qualityMode===2?12:qualityMode===1?10:8;
+}
+function shadowSteps(){
+  if(framesRendered<10) return 0;
+  if(isSoftware) return 4;
+  return qualityMode===0?6:qualityMode===1?8:10;
+}
+function aoSteps(){
+  if(framesRendered<10) return 0;
+  return qualityMode===0?3:4;
+}
+function resize(){
+  const dprMax=qualityMode===2?1.5:1.0;
+  const dpr=Math.min(window.devicePixelRatio||1, dprMax);
+  let w=Math.floor(window.innerWidth*resScale*dpr);
+  let h=Math.floor(window.innerHeight*resScale*dpr);
+  const cap=pixelCap();
+  if(w*h>cap){const s=Math.sqrt(cap/(w*h)); w=Math.floor(w*s); h=Math.floor(h*s);}
+  w=Math.min(w,MAX_VP[0]); h=Math.min(h,MAX_VP[1]);
+  RW=Math.max(2,w); RH=Math.max(2,h);
+  surf.width=RW; surf.height=RH;
+  surf.style.width=window.innerWidth+'px'; surf.style.height=window.innerHeight+'px';
+  const dpr2=Math.min(window.devicePixelRatio||1,1.5);
+  orbCv.width=Math.floor(window.innerWidth*dpr2);
+  orbCv.height=Math.floor(window.innerHeight*dpr2);
+  orbCv.style.width=window.innerWidth+'px'; orbCv.style.height=window.innerHeight+'px';
+  gl.viewport(0,0,RW,RH);
+}
+window.addEventListener('resize',resize);
+
+let yaw=0.6,pitch=0.2,dist=2.7;
+let dragging=false,px=0,py=0;
+const pts=new Map(); let pinchD=0;
+surf.addEventListener('pointerdown',e=>{try{surf.setPointerCapture(e.pointerId);}catch(_){}
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size===1){dragging=true;px=e.clientX;py=e.clientY;} else dragging=false;});
+surf.addEventListener('pointermove',e=>{
+  if(!pts.has(e.pointerId))return;
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size===2){const v=[...pts.values()]; const d=Math.hypot(v[0].x-v[1].x,v[0].y-v[1].y);
+    if(pinchD>0){dist*=pinchD/d; dist=Math.max(1.6,Math.min(6,dist));} pinchD=d;}
+  else if(dragging){yaw+=(e.clientX-px)*0.005; pitch+=(e.clientY-py)*0.005;
+    pitch=Math.max(-1.4,Math.min(1.4,pitch)); px=e.clientX; py=e.clientY;}});
+function pe(e){pts.delete(e.pointerId); if(pts.size<2)pinchD=0; if(!pts.size)dragging=false;}
+surf.addEventListener('pointerup',pe); surf.addEventListener('pointercancel',pe);
+surf.addEventListener('wheel',e=>{let d=e.deltaY; if(e.deltaMode===1)d*=16;
+  dist*=(1+d*0.0015); dist=Math.max(1.6,Math.min(6,dist)); e.preventDefault();},{passive:false});
+
+const $=id=>document.getElementById(id);
+let nStart=4,nEnd=20;
+const PHASE1=20.0, DWELL=1.2, MORPH=0.6, MAX_ITERS=8;
+let startTime=performance.now()/1000;
+
+let palette=0,ltype=0,lx=1.2,ly=1.4,lz=0.8,li=1.6,softUI=0.55,temp=5500;
+let l2on=true,l2x=-1,l2y=.4,l2z=-1.2,l2i=0.9,l2temp=8500;
+let showOrbits=true;
+function kRGB(k){k/=100; let r,g,b;
+  r=k<=66?255:329.7*Math.pow(k-60,-0.1332);
+  g=k<=66?99.47*Math.log(k)-161.12:288.12*Math.pow(k-60,-0.0755);
+  b=k>=66?255:(k<=19?0:138.52*Math.log(k-10)-305.04);
+  return [Math.max(0,Math.min(255,r))/255,Math.max(0,Math.min(255,g))/255,Math.max(0,Math.min(255,b))/255];}
+function applyUI(){
+  palette=+$('palette').value; ltype=+$('ltype').value;
+  lx=+$('lx').value; ly=+$('ly').value; lz=+$('lz').value;
+  li=+$('li').value; softUI=+$('lsoft').value; temp=+$('ltemp').value;
+  l2on=$('l2on').checked;
+  l2x=+$('l2x').value; l2y=+$('l2y').value; l2z=+$('l2z').value;
+  l2i=+$('l2i').value; l2temp=+$('l2temp').value;
+  showOrbits=$('showOrbits').checked;
+  const nq=+$('quality').value;
+  if(nq!==qualityMode){qualityMode=nq; resize();}
+}
+['palette','ltype','lx','ly','lz','li','lsoft','ltemp','l2on','l2x','l2y','l2z','l2i','l2temp','showOrbits','quality']
+  .forEach(id=>$(id).addEventListener('input',applyUI));
+
+const SEED_COUNT=160;
+const seeds=[];
+function seedReset(){
+  seeds.length=0;
+  for(let i=0;i<SEED_COUNT;i++){
+    const u=Math.random()*2-1, a=Math.random()*Math.PI*2, r=Math.sqrt(1-u*u);
+    const rad=0.85+Math.random()*0.3;
+    seeds.push({c:[r*Math.cos(a)*rad,r*Math.sin(a)*rad,u*rad]});
+  }
+}
+seedReset();
+$('restart').addEventListener('click',()=>{
+  let a=+$('nStart').value||4, b=+$('nEnd').value||20;
+  a=Math.max(2,Math.min(50,a)); b=Math.max(a,Math.min(50,b));
+  $('nStart').value=a; $('nEnd').value=b; nStart=a; nEnd=b;
+  // Reset Phase 3 morph state too
+  nTarget=null; nMorphStart=null; nMorphFrom=null;
+  seedReset(); startTime=performance.now()/1000;
+});
+
+// Phase 3: arbitrary morph target. Triggered by Morph button after the
+// classic Phase 1+2 sequence finishes, OR mid-flight to redirect the morph.
+let nTarget=null, nMorphStart=null, nMorphFrom=null;
+const N_MORPH_DUR=3.0;     // seconds for Phase 3 morph
+let lastPower=2;            // last computed power (for capturing morph start)
+$('nGo').addEventListener('click',()=>{
+  let v=+$('nTarget').value;
+  if(!Number.isFinite(v))return;
+  v=Math.max(2,Math.min(200,v));
+  $('nTarget').value=v;
+  nMorphFrom=lastPower;
+  nMorphStart=performance.now()/1000-startTime;
+  nTarget=v;
+});
+$('nTarget').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); $('nGo').click(); } });
+
+let last=performance.now()/1000, fpsAvg=30, resizeCD=0;
+
+function frame(){
+  if(lost){requestAnimationFrame(frame);return;}
+  const t=performance.now()/1000-startTime;
+  const nowS=performance.now()/1000; const dt=Math.min(0.1,nowS-last); last=nowS;
+  fpsAvg=fpsAvg*0.9+(1/Math.max(0.001,dt))*0.1;
+  if(resizeCD>0)resizeCD--;
+  if(qualityMode<2 && resizeCD===0 && framesRendered>30){
+    const maxScale=isSoftware?0.12:0.55;
+    if(fpsAvg<18 && resScale>0.04){resScale=Math.max(0.04,resScale-0.04); resize(); resizeCD=90;}
+    else if(fpsAvg>45 && resScale<maxScale){resScale=Math.min(maxScale,resScale+0.03); resize(); resizeCD=120;}
+  }
+
+  let power,iters,scale,label;
+  if(t<PHASE1){
+    const k=t/PHASE1, e=k*k*(3-2*k);
+    iters=1.0+e*(MAX_ITERS-1); scale=0.35+0.65*e; power=nStart;
+    label=`Phase 1 — n=${nStart} forming · iters=${iters.toFixed(2)} · t=${t.toFixed(1)}s`;
+  } else {
+    const steps=nEnd-nStart, t2=t-PHASE1, dur=DWELL+MORPH;
+    let p;
+    if(steps<=0)p=nStart;
+    else{
+      const idx=Math.min(steps,Math.floor(t2/dur));
+      const w=t2-idx*dur;
+      if(w<MORPH && idx<steps){const m=w/MORPH, e=m*m*(3-2*m); p=nStart+idx+e;}
+      else p=nStart+Math.min(steps,idx+(w>=MORPH?1:0));
+    }
+    let phaseLabel=`Phase 2 — n=${p.toFixed(2)} (${nStart}→${nEnd})`;
+    // Phase 3 override: if user requested a custom morph target, ease from
+    // nMorphFrom → nTarget over N_MORPH_DUR seconds, starting at nMorphStart.
+    // Once finished, hold at nTarget. New Morph clicks restart from current p.
+    if(nTarget!==null && nMorphStart!==null){
+      const dt3=t-nMorphStart;
+      if(dt3<=0) p=nMorphFrom;
+      else if(dt3>=N_MORPH_DUR){ p=nTarget; phaseLabel=`Phase 3 — n=${nTarget.toFixed(2)} (held)`; }
+      else{
+        const m=dt3/N_MORPH_DUR, e=m*m*(3-2*m);
+        p=nMorphFrom+(nTarget-nMorphFrom)*e;
+        phaseLabel=`Phase 3 — n=${p.toFixed(2)} → ${nTarget}`;
+      }
+    }
+    power=p; iters=MAX_ITERS; scale=1.0;
+    label=phaseLabel;
+  }
+  lastPower=power;
+
+  yaw+=dt*0.12;
+  const pitchEff=pitch+(t<PHASE1?Math.sin(t*0.4)*0.15:0);
+  const cx=Math.cos(pitchEff)*Math.sin(yaw)*dist;
+  const cy=Math.sin(pitchEff)*dist;
+  const cz=Math.cos(pitchEff)*Math.cos(yaw)*dist;
+
+  const lc=kRGB(temp), lc2=kRGB(l2temp);
+  const shadowK=4+(1-softUI)*60, specPow=6+(1-softUI)*80;
+
+  gl.useProgram(prog);
+  gl.uniform2f(U.uRes,RW,RH);
+  gl.uniform1f(U.uPower,power);
+  gl.uniform1f(U.uIters,Math.min(iters,deIters()));
+  gl.uniform1f(U.uScale,scale);
+  gl.uniform3f(U.uCamPos,cx,cy,cz);
+  gl.uniform3f(U.uCamTarget,0,0,0);
+  gl.uniform3f(U.uLightDir,lx,ly,lz);
+  gl.uniform3f(U.uLightCol,lc[0],lc[1],lc[2]);
+  gl.uniform3f(U.uLightDir2,l2x,l2y,l2z);
+  gl.uniform3f(U.uLightCol2,lc2[0],lc2[1],lc2[2]);
+  gl.uniform1f(U.uLightI,li);
+  gl.uniform1f(U.uLightI2,l2on?l2i:0);
+  gl.uniform1f(U.uSoftK,shadowK);
+  gl.uniform1f(U.uSpecPow,specPow);
+  gl.uniform1i(U.uLightType,ltype);
+  gl.uniform1i(U.uPalette,palette);
+  gl.uniform1i(U.uL2On,l2on?1:0);
+  gl.uniform1i(U.uRMSteps,rmSteps());
+  gl.uniform1i(U.uDEIters,deIters());
+  gl.uniform1i(U.uShadowSteps,shadowSteps());
+  gl.uniform1i(U.uAOSteps,aoSteps());
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  framesRendered++;
+
+  octx.clearRect(0,0,orbCv.width,orbCv.height);
+  if(showOrbits && framesRendered>3){
+    const camV=[cx,cy,cz];
+    let cw=[-cx,-cy,-cz]; let L=Math.hypot(cw[0],cw[1],cw[2])||1; cw[0]/=L;cw[1]/=L;cw[2]/=L;
+    const upY=Math.abs(cw[1])>0.95?[0,0,1]:[0,1,0];
+    let cu=[cw[1]*upY[2]-cw[2]*upY[1], cw[2]*upY[0]-cw[0]*upY[2], cw[0]*upY[1]-cw[1]*upY[0]];
+    L=Math.hypot(cu[0],cu[1],cu[2])||1; cu[0]/=L;cu[1]/=L;cu[2]/=L;
+    let cv=[cu[1]*cw[2]-cu[2]*cw[1], cu[2]*cw[0]-cu[0]*cw[2], cu[0]*cw[1]-cu[1]*cw[0]];
+    L=Math.hypot(cv[0],cv[1],cv[2])||1; cv[0]/=L;cv[1]/=L;cv[2]/=L;
+
+    const W=orbCv.width,H=orbCv.height;
+    octx.globalCompositeOperation='lighter';
+    const orbitIters = t<PHASE1
+      ? Math.max(1,Math.floor(1+(t/PHASE1)*(MAX_ITERS-2)))
+      : MAX_ITERS-2;
+    const n=power;
+    const seedFrac = t<PHASE1 ? Math.min(1,0.2+t/PHASE1*0.8) : 1;
+    const N=Math.floor(SEED_COUNT*seedFrac);
+
+    function proj(wp){
+      const v=[wp[0]-camV[0],wp[1]-camV[1],wp[2]-camV[2]];
+      const zc=v[0]*cw[0]+v[1]*cw[1]+v[2]*cw[2];
+      if(zc<=0.05)return null;
+      const xc=v[0]*cu[0]+v[1]*cu[1]+v[2]*cu[2];
+      const yc=v[0]*cv[0]+v[1]*cv[1]+v[2]*cv[2];
+      return [xc/zc*1.6, yc/zc*1.6, zc];
+    }
+    for(let s=0;s<N;s++){
+      const c=seeds[s].c;
+      let z=[c[0],c[1],c[2]], prev=null;
+      for(let i=0;i<orbitIters;i++){
+        const r=Math.hypot(z[0],z[1],z[2]); if(r>2)break;
+        const th=Math.acos(Math.max(-1,Math.min(1,z[2]/Math.max(r,1e-8))));
+        const ph=Math.atan2(z[1],z[0]);
+        const zr=Math.pow(r,n), nt=th*n, np=ph*n;
+        z=[zr*Math.sin(nt)*Math.cos(np)+c[0],
+           zr*Math.sin(nt)*Math.sin(np)+c[1],
+           zr*Math.cos(nt)+c[2]];
+        const wp=[z[0]*scale,z[1]*scale,z[2]*scale];
+        const pr=proj(wp); if(!pr){prev=null;continue;}
+        const sx=W*0.5+pr[0]*H*0.5;
+        const sy=H*0.5-pr[1]*H*0.5;
+        const hue=(n*30+i*15)%360;
+        const a=0.18+0.5/(1+pr[2]*0.5);
+        octx.fillStyle=`hsla(${hue},90%,70%,${a})`;
+        octx.beginPath(); octx.arc(sx,sy,Math.max(0.8,1.6-pr[2]*0.2),0,6.283); octx.fill();
+        if(prev){
+          octx.strokeStyle=`hsla(${hue},90%,75%,${a*0.4})`;
+          octx.lineWidth=0.7;
+          octx.beginPath(); octx.moveTo(prev[0],prev[1]); octx.lineTo(sx,sy); octx.stroke();
+        }
+        prev=[sx,sy];
+      }
+    }
+    octx.globalCompositeOperation='source-over';
+  }
+
+  info.textContent=label+` · ${fpsAvg.toFixed(0)} fps · ${RW}×${RH}`;
+  requestAnimationFrame(frame);
+}
+
+applyUI();
+resScale=isSoftware?0.03:0.08;
+resize();
+info.textContent='ready';
+requestAnimationFrame(frame);
+}
+
+if(document.readyState==='loading')
+  document.addEventListener('DOMContentLoaded',boot);
+else boot();
+})();
+</script>
+</body>
+</html>

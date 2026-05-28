@@ -46,11 +46,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
-    """Context manager for database session (for non-dependency use)."""
+    """Context manager for database session (for non-dependency use).
+
+    Like get_db(), callers are responsible for explicit commit().
+    The context manager only rolls back on unhandled exceptions.
+    """
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
@@ -61,14 +64,9 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     """Initialize database tables."""
     from app.db.models import Base
-    from sqlalchemy import text
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Migrate: add 'enabled' column to agent_configs if not exists
-        await conn.execute(text(
-            "ALTER TABLE agent_configs ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE"
-        ))
 
 
 async def close_db() -> None:

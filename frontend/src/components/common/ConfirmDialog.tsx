@@ -1,6 +1,7 @@
 import { Fragment, useCallback } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon, TrashIcon, ExclamationCircleIcon, InformationCircleIcon } from '@heroicons/react/24/outline'
+import Button from './Button'
 
 interface ConfirmDialogProps {
   isOpen: boolean
@@ -25,23 +26,23 @@ export default function ConfirmDialog({
   type = 'danger',
   loading = false,
 }: ConfirmDialogProps) {
+  // Улучшатели#5 P1·M — light-theme contract: keep type-coloured icon halos
+  // but route the panel/text through cf-* tokens so light mode is readable.
   const iconColors = {
-    danger: 'text-red-400 bg-gradient-to-br from-red-500/30 to-red-600/20',
-    warning: 'text-yellow-400 bg-gradient-to-br from-yellow-500/30 to-yellow-600/20',
-    info: 'text-blue-400 bg-gradient-to-br from-blue-500/30 to-blue-600/20',
-  }
-
-  const buttonColors = {
-    danger: 'bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 focus:ring-red-500 shadow-lg shadow-red-500/25',
-    warning: 'bg-gradient-to-r from-yellow-600 to-yellow-700 hover:from-yellow-500 hover:to-yellow-600 focus:ring-yellow-500 shadow-lg shadow-yellow-500/25',
-    info: 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 focus:ring-blue-500 shadow-lg shadow-blue-500/25',
+    danger: 'text-red-500 bg-red-500/15',
+    warning: 'text-yellow-500 bg-yellow-500/15',
+    info: 'text-blue-500 bg-blue-500/15',
   }
 
   const borderColors = {
-    danger: 'border-red-500/30',
-    warning: 'border-yellow-500/30',
-    info: 'border-blue-500/30',
+    danger: 'border-red-500/40',
+    warning: 'border-yellow-500/40',
+    info: 'border-blue-500/40',
   }
+
+  // Confirm button variant: danger maps to the new Button primitive variant.
+  // warning/info both use 'primary' which is theme-aware.
+  const confirmVariant: 'danger' | 'primary' = type === 'danger' ? 'danger' : 'primary'
 
   const Icon = type === 'danger' ? TrashIcon : type === 'warning' ? ExclamationCircleIcon : InformationCircleIcon
 
@@ -77,12 +78,19 @@ export default function ConfirmDialog({
               leaveTo="opacity-0 scale-90 translate-y-4"
             >
               <Dialog.Panel
-                className={`w-full max-w-md transform overflow-hidden rounded-2xl bg-gradient-to-b from-gray-800 to-gray-900 border ${borderColors[type]} p-6 shadow-2xl transition-all`}
+                className={`relative w-full max-w-md transform overflow-hidden rounded-2xl bg-cf-panel text-cf-text border ${borderColors[type]} p-6 shadow-2xl transition-all`}
               >
-                {/* Close button */}
+                {/* Close button — Улучшатели#5 P2·S — all close paths gated through safeClose.
+                    Visually grayed out while loading to match disabled affordance. */}
                 <button
-                  onClick={onClose}
-                  className="absolute top-4 right-4 text-gray-500 hover:text-gray-300 transition-colors p-1 rounded-lg hover:bg-gray-700/50"
+                  onClick={safeClose}
+                  disabled={loading}
+                  aria-label="Close dialog"
+                  className={`absolute top-4 right-4 transition-colors p-1 rounded-lg disabled:cursor-not-allowed ${
+                    loading
+                      ? 'text-cf-text-muted/40 opacity-40'
+                      : 'text-cf-text-muted hover:text-cf-text hover:bg-cf-hover'
+                  }`}
                 >
                   <XMarkIcon className="w-5 h-5" />
                 </button>
@@ -94,54 +102,34 @@ export default function ConfirmDialog({
                   </div>
 
                   {/* Content */}
-                  <Dialog.Title className="text-xl font-bold text-white mb-2">
+                  <Dialog.Title className="text-xl font-bold text-cf-text mb-2">
                     {title}
                   </Dialog.Title>
-                  <Dialog.Description className="text-sm text-gray-400 leading-relaxed max-w-sm">
+                  <Dialog.Description className="text-sm text-cf-text-muted leading-relaxed max-w-sm">
                     {message}
                   </Dialog.Description>
                 </div>
 
-                {/* Actions */}
+                {/* Actions — Улучшатели#5 P1·M Button primitive. */}
                 <div className="mt-8 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={onClose}
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    onClick={safeClose}
                     disabled={loading}
-                    className="flex-1 px-4 py-3 text-sm font-semibold text-gray-300 bg-gray-700/50 hover:bg-gray-600/50 border border-gray-600 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-500 disabled:opacity-50"
+                    fullWidth
                   >
                     {cancelText}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant={confirmVariant}
+                    size="lg"
                     onClick={onConfirm}
-                    disabled={loading}
-                    className={`flex-1 px-4 py-3 text-sm font-semibold text-white rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 ${buttonColors[type]}`}
+                    loading={loading}
+                    fullWidth
                   >
-                    {loading ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                            fill="none"
-                          />
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                          />
-                        </svg>
-                        Processing...
-                      </span>
-                    ) : (
-                      confirmText
-                    )}
-                  </button>
+                    {loading ? 'Processing...' : confirmText}
+                  </Button>
                 </div>
               </Dialog.Panel>
             </Transition.Child>

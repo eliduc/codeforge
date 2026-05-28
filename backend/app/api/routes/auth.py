@@ -6,6 +6,7 @@ GET  /api/auth/me            — return the current authenticated user
 """
 
 import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -58,8 +59,13 @@ class UserResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _hash_code(code: str) -> str:
-    """SHA-256 hash of a one-time code."""
-    return hashlib.sha256(code.encode()).hexdigest()
+    """HMAC-SHA256 hash of a one-time code, keyed with SECRET_KEY.
+
+    Using HMAC prevents offline brute-force of the 6-digit OTP from a DB dump
+    (attacker would also need the secret key).
+    """
+    key = get_settings().secret_key.encode()
+    return hmac.new(key, code.encode(), hashlib.sha256).hexdigest()
 
 
 def _generate_otp(length: int = 6) -> str:
@@ -92,21 +98,25 @@ async def request_otp(body: OTPRequest):
     ok_msg = {"message": "If this email is allowed, you will receive a code shortly."}
 
     async with AsyncSessionLocal() as db:
-        # Rate limit: max 3 pending (unused + unexpired) OTPs per email in last 10 min
+        # Rate limit: max 3 pending (unused + unexpired) OTPs per email in last 10 min.
+        # Lock matching rows first (FOR UPDATE), then count in Python to prevent
+        # TOCTOU race (two concurrent requests both passing the count check).
+        # Note: FOR UPDATE cannot be used with aggregate functions in PostgreSQL.
         ten_min_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
         result = await db.execute(
-            select(sa_func.count())
-            .select_from(OTPCode)
+            select(OTPCode.id)
             .where(
                 OTPCode.email == email,
                 OTPCode.used == False,  # noqa: E712
                 OTPCode.expires_at > datetime.now(timezone.utc),
                 OTPCode.created_at > ten_min_ago,
             )
+            .with_for_update()
         )
-        pending_count = result.scalar_one()
+        pending_count = len(result.all())
         if pending_count >= 3:
             logger.warning("OTP rate limit hit for %s (%d pending)", email, pending_count)
+            await db.rollback()  # release FOR UPDATE lock
             return ok_msg
 
         # Generate OTP
@@ -167,7 +177,7 @@ async def verify_otp(body: OTPVerify):
         otp_record.attempts += 1
 
         # Compare hash
-        if _hash_code(code) != otp_record.code_hash:
+        if not hmac.compare_digest(_hash_code(code), otp_record.code_hash):
             await db.commit()
             remaining = 5 - otp_record.attempts
             raise HTTPException(
@@ -254,6 +264,10 @@ async def request_access(body: AccessRequest):
     email = body.email.lower().strip()
     settings = get_settings()
 
+    if not settings.admin_email:
+        logger.warning("Access request from %s but ADMIN_EMAIL is not configured", email)
+        return {"message": "Your access request has been sent to the administrator."}
+
     try:
         await send_access_request_email(
             requester_email=email,
@@ -261,7 +275,5 @@ async def request_access(body: AccessRequest):
         )
     except Exception:
         logger.exception("Failed to send access request for %s", email)
-        # Still return OK — don't reveal mail delivery status
-        pass
 
     return {"message": "Your access request has been sent to the administrator."}

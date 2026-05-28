@@ -46,6 +46,7 @@ class BaseAgent(ABC):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking_effort: str | None = None,
+        request_timeout: float | None = None,
     ):
         self.llm_router = llm_router
         self.provider = provider
@@ -55,6 +56,7 @@ class BaseAgent(ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.thinking_effort = thinking_effort
+        self.request_timeout = request_timeout
 
     @property
     def llm_provider(self) -> str:
@@ -95,17 +97,32 @@ class BaseAgent(ABC):
         system_prompt: str | None = None,
         max_tokens: int | None = None,
         thinking_effort: str | None = None,
+        temperature: float | None = None,
+        request_json_mode: bool = False,
     ) -> LLMResponse | LLMError:
-        """Call the LLM with the given prompt."""
+        """Call the LLM with the given prompt.
+
+        ``temperature`` and ``max_tokens`` are per-call overrides. When None,
+        the agent's configured defaults (``self.temperature`` / ``self.max_tokens``)
+        are used. Overrides do not mutate the agent's state, making them safe for
+        adaptive per-iteration tuning by callers (e.g. orchestrator).
+
+        ``request_json_mode``: when True, signals the provider to use its
+        native JSON-only output mechanism (OpenAI response_format, Anthropic
+        assistant prefill, Gemini response_mime_type, Ollama format=json).
+        Use for agents whose downstream parsing requires strict JSON.
+        """
         effective_effort = thinking_effort if thinking_effort is not None else self.thinking_effort
         return await self.llm_router.generate(
             provider=self.provider,
             model=self.model,
             prompt=prompt,
-            temperature=self.temperature,
+            temperature=temperature if temperature is not None else self.temperature,
             max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
             system_prompt=system_prompt,
             thinking_effort=effective_effort,
+            request_timeout=self.request_timeout,
+            request_json_mode=request_json_mode,
         )
 
     def _create_result(

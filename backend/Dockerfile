@@ -18,6 +18,16 @@ COPY . .
 
 # Create non-root user
 RUN useradd -m appuser && chown -R appuser:appuser /app
+
+# Pre-create Visual Review storage root and hand it to appuser BEFORE we drop
+# privileges. Without this, the first capture inside the container hits
+# `[Errno 13] Permission denied: '/var/lib/codeforge'` because the dir either
+# doesn't exist or is root-owned from the bind mount. `mkdir -p` is idempotent
+# and harmless if a docker-compose volume later mounts over it.
+RUN mkdir -p /var/lib/codeforge/screenshots \
+    && chown -R appuser:appuser /var/lib/codeforge \
+    && chmod -R 0755 /var/lib/codeforge
+
 USER appuser
 
 # Expose port

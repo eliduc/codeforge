@@ -837,6 +837,186 @@ async def _validate_browser_impl(request: BrowserValidationRequest) -> Execution
 
 
 # ============================================================================
+# Screenshot endpoint — capture N stills from an HTML page for Visual Review
+# ============================================================================
+
+
+class ScreenshotRequest(BaseModel):
+    """Request to capture screenshots of an HTML page in headless Chromium."""
+    html: str = Field(..., max_length=1_000_000, description="HTML page content (max 1MB)")
+    timestamps: list[float] = Field(
+        default_factory=lambda: [0.5, 2.0, 5.0, 8.0, 12.0],
+        description="Seconds after page-load at which to capture each frame",
+    )
+    timeout: int = Field(
+        default=20, ge=5, le=30,
+        description="Overall capture timeout in seconds (max 30 — keeps total slot bounded)",
+    )
+
+
+class ScreenshotFrame(BaseModel):
+    """Metadata for a single captured frame."""
+    frame_index: int
+    t_seconds: float
+    width: int
+    height: int
+    image_b64: str = Field(..., description="Base64-encoded PNG bytes")
+
+
+class ScreenshotResult(BaseModel):
+    """Result of screenshot capture."""
+    success: bool
+    frames: list[ScreenshotFrame] = Field(default_factory=list)
+    error: Optional[str] = None
+    capture_time_ms: int = 0
+
+
+@app.post("/capture-screenshots", response_model=ScreenshotResult, dependencies=[Depends(verify_sandbox_key)])
+async def capture_screenshots(request: ScreenshotRequest) -> ScreenshotResult:
+    """Capture N stills from an HTML page in headless Chromium.
+
+    The PNGs are returned base64-encoded; the backend persists them under
+    STORAGE_ROOT/screenshots/<session_id>/<code_version_id>/. We don't write
+    directly to a shared volume because the sandbox runs in its own
+    filesystem namespace.
+    """
+    try:
+        await asyncio.wait_for(_execution_semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent executions (max {MAX_CONCURRENT_EXECUTIONS}). Try again later.",
+        )
+
+    try:
+        return await _capture_screenshots_impl(request)
+    finally:
+        _execution_semaphore.release()
+
+
+async def _capture_screenshots_impl(request: ScreenshotRequest) -> ScreenshotResult:
+    """Internal implementation — runs browser_screenshot.js and reads back the PNGs."""
+    import base64
+    import json as _json
+
+    logger.info(f"Capturing screenshots: {len(request.timestamps)} frames, timeout={request.timeout}s")
+
+    work_dir = Path(tempfile.mkdtemp(prefix="screenshot_"))
+    out_dir = work_dir / "frames"
+    start_time = time.time()
+
+    try:
+        html_file = work_dir / "index.html"
+        html_file.write_text(request.html, encoding="utf-8")
+
+        capture_script = Path("/app/browser_screenshot.js")
+        if not capture_script.exists():
+            return ScreenshotResult(
+                success=False,
+                error="Browser screenshot script not found. Chromium may not be installed.",
+                capture_time_ms=int((time.time() - start_time) * 1000),
+            )
+
+        timestamps_arg = ",".join(str(t) for t in request.timestamps)
+
+        process = await asyncio.create_subprocess_exec(
+            "node",
+            str(capture_script),
+            str(html_file),
+            str(out_dir),
+            timestamps_arg,
+            str(request.timeout),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(work_dir),
+            env={
+                **os.environ,
+                "PUPPETEER_EXECUTABLE_PATH": os.environ.get(
+                    "PUPPETEER_EXECUTABLE_PATH", "/usr/bin/chromium"
+                ),
+            },
+        )
+
+        overall_timeout = request.timeout + 15
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=overall_timeout
+            )
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            return ScreenshotResult(
+                success=False,
+                error=f"Screenshot capture timed out after {overall_timeout}s",
+                capture_time_ms=int((time.time() - start_time) * 1000),
+            )
+
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")[:5000]
+
+        # Parse the LAST JSON line on stdout — the capture script may emit
+        # other diagnostics before it.
+        meta: dict = {"frames": []}
+        for line in reversed(stdout_text.splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    meta = _json.loads(line)
+                    break
+                except _json.JSONDecodeError:
+                    continue
+
+        frames: list[ScreenshotFrame] = []
+        for frame_meta in meta.get("frames", []):
+            frame_path = Path(frame_meta.get("path", ""))
+            if not frame_path.exists():
+                continue
+            try:
+                png_bytes = frame_path.read_bytes()
+            except OSError:
+                continue
+            frames.append(ScreenshotFrame(
+                frame_index=int(frame_meta.get("frame_index", 0)),
+                t_seconds=float(frame_meta.get("t_seconds", 0.0)),
+                width=int(frame_meta.get("width", 0)),
+                height=int(frame_meta.get("height", 0)),
+                image_b64=base64.b64encode(png_bytes).decode("ascii"),
+            ))
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        if not frames:
+            return ScreenshotResult(
+                success=False,
+                error=f"No frames captured. stderr: {stderr_text[:500]}",
+                capture_time_ms=elapsed_ms,
+            )
+        return ScreenshotResult(success=True, frames=frames, capture_time_ms=elapsed_ms)
+
+    except Exception as e:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.exception(f"Screenshot capture error: {e}")
+        return ScreenshotResult(
+            success=False,
+            error=f"Screenshot capture error: {str(e)[:500]}",
+            capture_time_ms=elapsed_ms,
+        )
+
+    finally:
+        for attempt in range(3):
+            try:
+                shutil.rmtree(work_dir)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.warning(f"Failed to cleanup {work_dir}: {e}")
+
+
+# ============================================================================
 # Bundle endpoint — builds JS/TS code into a browser-ready HTML page
 # ============================================================================
 

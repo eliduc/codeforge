@@ -52,3 +52,20 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# KAO#Full-C-2 M4 — async test teardown noise filter.
+# asyncpg/SQLAlchemy hold pooled connections bound to whichever event loop
+# created them. When pytest-asyncio (mode=auto, function-scoped loops) tears
+# down a loop with pooled-but-idle connections still in it, asyncpg attempts
+# to send a final wire packet on the closed loop and surfaces a
+# "Event loop is closed" RuntimeError as PytestUnraisableExceptionWarning.
+# The conftest already calls `await engine.dispose()` on each function-scoped
+# auth fixture; this filter suppresses the residual unraisable from sockets
+# that asyncpg's transport closes after our dispose completes (no behavioral
+# impact, the test process is exiting). Root cause documented; if a stricter
+# fix is required, switch the SQLAlchemy engine to NullPool in conftest.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]

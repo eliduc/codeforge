@@ -27,17 +27,40 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     secret_key: str = ""
     cors_origins: str = "*"  # Comma-separated origins, or "*" for dev
+    cors_allow_wildcard: bool = False  # Explicit opt-in to '*' CORS in debug mode (LOCAL DEV ONLY)
     codeforge_api_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def _ensure_secret_key(self) -> "Settings":
-        """Generate a random secret key if none is set, and warn."""
-        weak_defaults = {"", "change-me-in-production"}
+        """Generate a random secret key if none is set, and warn.
+
+        In non-debug mode with weak/empty key, generate ephemeral but log a
+        prominent warning.  Sessions will be lost on restart.
+        """
+        # Common public-placeholder values that should be rejected as weak.
+        # Includes templates left in .env files from copy-paste, dev defaults,
+        # and well-known framework placeholders.
+        weak_defaults = {
+            "",
+            "change-me-in-production",
+            "your-secret-key-change-in-production",
+            "your-secret-key-here",
+            "secret-key",
+            "changeme",
+            "default-secret",
+            "dev-secret-key",
+            "test-secret",
+        }
         if self.secret_key in weak_defaults:
+            original = self.secret_key
             self.secret_key = secrets.token_urlsafe(48)
-            _config_logger.warning(
-                "SECRET_KEY not set — generated a random ephemeral key. "
-                "Set SECRET_KEY in your .env for stable sessions across restarts."
+            _config_logger.log(
+                logging.ERROR if not self.debug else logging.WARNING,
+                "SECRET_KEY is a known weak/placeholder value (%r) — generated "
+                "a random ephemeral key. JWTs will be invalidated on restart! "
+                "Set SECRET_KEY in your .env to a strong random value (e.g. "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`).",
+                original or "<empty>",
             )
         return self
 
@@ -78,7 +101,7 @@ class Settings(BaseSettings):
 
     # Auth — email OTP + JWT
     allowed_emails: str | None = None  # comma-separated whitelist, e.g. "user@x.com,*@company.com"
-    admin_email: str = "levrlg@gmail.com"  # receives access requests from non-whitelisted users
+    admin_email: str | None = None  # receives access requests from non-whitelisted users (set ADMIN_EMAIL env var)
     jwt_expiry_minutes: int = 1440  # 24 hours
     otp_expiry_minutes: int = 5
     otp_length: int = 6

@@ -10,9 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
-from app.db.models import PromptTemplate
+from app.db.models import PromptTemplate, PromptTemplateVersion
 from app.schemas import (
     PromptTemplateCreate, PromptTemplateUpdate, PromptTemplateResponse,
+    PromptTemplateVersionResponse,
     AgentType
 )
 from app.agents.prompts import CODER_PROMPT, TESTER_PROMPT, SUMMARIZER_PROMPT, FINALIZER_PROMPT
@@ -116,6 +117,21 @@ async def update_prompt(
             detail="Cannot change agent_type on an existing prompt template. Create a new prompt instead.",
         )
 
+    # change_note is metadata for the version snapshot — not a field on PromptTemplate
+    change_note = update_data.pop("change_note", None)
+
+    # Snapshot current state BEFORE applying changes (version history)
+    snapshot = PromptTemplateVersion(
+        template_id=prompt.id,
+        version_number=prompt.current_version,
+        name=prompt.name,
+        agent_type=prompt.agent_type.value if hasattr(prompt.agent_type, "value") else str(prompt.agent_type),
+        template_text=prompt.template_text,
+        description=prompt.description,
+        change_note=change_note,
+    )
+    db.add(snapshot)
+
     # Handle is_default change
     if update_data.get("is_default"):
         stmt = select(PromptTemplate).where(
@@ -130,6 +146,9 @@ async def update_prompt(
 
     for field, value in update_data.items():
         setattr(prompt, field, value)
+
+    # Bump current version number to reflect the new live state
+    prompt.current_version = (prompt.current_version or 1) + 1
 
     await db.commit()
     await db.refresh(prompt)
@@ -207,3 +226,76 @@ async def validate_prompt(
         "missing_variables": missing,
         "agent_type": body.agent_type,
     }
+
+
+# ============================================================================
+# Version history & rollback
+# ============================================================================
+
+
+@router.get("/{prompt_id}/versions", response_model=List[PromptTemplateVersionResponse])
+async def list_prompt_versions(
+    prompt_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """List all historical versions of a prompt template, newest first."""
+    # Ensure template exists (returns 404 otherwise so callers don't get an empty list silently)
+    template = await db.get(PromptTemplate, prompt_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+
+    stmt = (
+        select(PromptTemplateVersion)
+        .where(PromptTemplateVersion.template_id == prompt_id)
+        .order_by(PromptTemplateVersion.version_number.desc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+@router.post("/{prompt_id}/rollback/{version_number}", response_model=PromptTemplateResponse)
+async def rollback_prompt_version(
+    prompt_id: int,
+    version_number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Roll a prompt template back to a specific historical version.
+
+    Snapshots the current state first so the rollback itself is reversible.
+    """
+    template = await db.get(PromptTemplate, prompt_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+
+    target_stmt = select(PromptTemplateVersion).where(
+        PromptTemplateVersion.template_id == prompt_id,
+        PromptTemplateVersion.version_number == version_number,
+    )
+    target_result = await db.execute(target_stmt)
+    target = target_result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(
+            status_code=404, detail=f"Version {version_number} not found for this template"
+        )
+
+    # Snapshot CURRENT state before rollback so the change is reversible
+    snapshot = PromptTemplateVersion(
+        template_id=template.id,
+        version_number=template.current_version,
+        name=template.name,
+        agent_type=template.agent_type.value if hasattr(template.agent_type, "value") else str(template.agent_type),
+        template_text=template.template_text,
+        description=template.description,
+        change_note=f"Auto-snapshot before rollback to v{version_number}",
+    )
+    db.add(snapshot)
+
+    # Apply rollback (do NOT change agent_type — see BUG #31)
+    template.name = target.name
+    template.template_text = target.template_text
+    template.description = target.description
+    template.current_version = (template.current_version or 1) + 1
+
+    await db.commit()
+    await db.refresh(template)
+    return template

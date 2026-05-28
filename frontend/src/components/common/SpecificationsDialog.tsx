@@ -14,6 +14,7 @@ import {
   Save,
 } from 'lucide-react'
 import notify from './StyledToast'
+import SpecHelperPanel from './SpecHelperPanel'
 import { uploadFiles, fetchRepo, updateSession } from '../../services/api'
 import type { AttachmentInfo } from '../../types'
 
@@ -25,6 +26,11 @@ interface SpecificationsDialogProps {
   specification: string
   initialCode: string
   attachments: AttachmentInfo[]
+  /** Optional context for cost estimation. */
+  language?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  agentConfigs?: any[]
+  maxIterations?: number
   onSaved: (data: {
     specification: string
     initial_code: string
@@ -39,6 +45,9 @@ export default function SpecificationsDialog({
   specification: initialSpecification,
   initialCode: initialInitialCode,
   attachments: initialAttachments,
+  language,
+  agentConfigs,
+  maxIterations,
   onSaved,
 }: SpecificationsDialogProps) {
   const [specification, setSpecification] = useState(initialSpecification || '')
@@ -197,25 +206,27 @@ export default function SpecificationsDialog({
               leaveFrom="opacity-100 scale-100 translate-y-0"
               leaveTo="opacity-0 scale-90 translate-y-4"
             >
-              <Dialog.Panel className="w-full max-w-2xl transform overflow-hidden rounded-2xl bg-gradient-to-b from-gray-800 to-gray-900 border border-indigo-500/30 p-6 shadow-2xl transition-all">
+              {/* Улучшатели#5 P1·M — cf-* tokens replace gray-800/gray-900 gradient. */}
+              <Dialog.Panel className="relative w-full max-w-2xl transform overflow-hidden rounded-2xl bg-cf-panel text-cf-text border border-cf-border p-6 shadow-2xl transition-all">
                 {/* Close button */}
                 <button
                   onClick={onClose}
-                  className="absolute top-4 right-4 text-gray-500 hover:text-gray-300 transition-colors p-1 rounded-lg hover:bg-gray-700/50"
+                  aria-label="Close dialog"
+                  className="absolute top-4 right-4 text-cf-text-muted hover:text-cf-text transition-colors p-1 rounded-lg hover:bg-cf-hover"
                 >
                   <XMarkIcon className="w-5 h-5" />
                 </button>
 
                 {/* Header */}
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="p-3 rounded-xl bg-gradient-to-br from-indigo-500/30 to-indigo-600/20 text-indigo-400">
+                  <div className="p-3 rounded-xl bg-indigo-100 text-indigo-700 dark:bg-cf-primary/15 dark:text-cf-primary">
                     <FileText className="w-6 h-6" />
                   </div>
                   <div>
-                    <Dialog.Title className="text-xl font-bold text-white">
+                    <Dialog.Title className="text-xl font-bold text-cf-text">
                       Session Specifications
                     </Dialog.Title>
-                    <Dialog.Description className="text-sm text-gray-400 mt-0.5">
+                    <Dialog.Description className="text-sm text-cf-text-muted mt-0.5">
                       Define what you want the agents to build
                     </Dialog.Description>
                   </div>
@@ -224,7 +235,7 @@ export default function SpecificationsDialog({
                 <div className="space-y-5">
                   {/* Specification */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                    <label className="block text-sm font-medium text-cf-text mb-1.5">
                       Specification
                     </label>
                     <textarea
@@ -232,8 +243,16 @@ export default function SpecificationsDialog({
                       onChange={(e) => setSpecification(e.target.value)}
                       placeholder="Describe what you want the code to do..."
                       rows={6}
-                      className="w-full px-4 py-2.5 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none text-sm leading-relaxed"
+                      className="w-full px-4 py-2.5 bg-cf-input border border-cf-border rounded-lg text-cf-text placeholder-cf-text-muted focus:outline-none focus:ring-2 focus:ring-cf-primary resize-none text-sm leading-relaxed"
                     />
+                    <div className="mt-2">
+                      <SpecHelperPanel
+                        specification={specification}
+                        language={language}
+                        agentConfigs={agentConfigs}
+                        maxIterations={maxIterations}
+                      />
+                    </div>
                   </div>
 
                   {/* Initial Code */}

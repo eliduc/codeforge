@@ -178,3 +178,19 @@ async def require_api_key(
 
 
 validate_ws_api_key = validate_ws_token
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenancy helper
+# ---------------------------------------------------------------------------
+
+def get_current_user_id(auth_data: dict | None) -> str | None:
+    """Extract the authenticated user's UUID from auth_data.
+
+    Returns the user's UUID string for JWT-authenticated requests,
+    or None for API-key / dev-mode contexts (which retain full access
+    for backwards compatibility).
+    """
+    if auth_data is None:
+        return None  # Dev mode or API key — no user context, treat as "all access"
+    return auth_data.get("sub")  # JWT 'sub' claim is the user UUID
