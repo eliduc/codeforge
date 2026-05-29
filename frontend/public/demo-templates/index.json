@@ -22,5 +22,13 @@
     "language": "javascript_browser",
     "thumbnail": "💎",
     "duration_seconds": 90
+  },
+  {
+    "id": "life",
+    "name": "Conway's Game of Life",
+    "description": "Conway's Game of Life with a dynamically growing grid (no edge effects), striking visuals, step + auto playback, and a jump-to-generation control.",
+    "language": "javascript_browser",
+    "thumbnail": "🦠",
+    "duration_seconds": 116
   }
 ]

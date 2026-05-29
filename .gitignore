@@ -26,6 +26,9 @@ yarn-error.log*
 frontend/dist/
 frontend/build/
 
+# Scratch — demo authoring (raw session HTML exports + generator)
+.demo_scratch/
+
 # IDE
 .vscode/
 .idea/
