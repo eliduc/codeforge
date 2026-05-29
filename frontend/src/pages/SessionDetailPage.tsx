@@ -128,6 +128,7 @@ import {
   ArtifactEdge,
   DetailPanel,
   MetricsPanel,
+  CompletionBanner,
   LegendPanel,
   GitPanel,
   // КАО#VR-Wave1 Frontend — Visual Review side-panel.
@@ -1799,7 +1800,11 @@ export default function SessionDetailPage() {
         scheduleTimeout(() => {
           setNodes((nds: any[]) =>
             nds.map((node: any) => {
-              if (node.id === 'input' || node.id === 'output') return node
+              // VR-46 — only the Specification (input) node is exempt here; the
+              // Final Code (output) node must also flip to "done" in these
+              // post-finalization states (it used to be skipped, leaving a
+              // misleading grey "Waiting…" even though the code was ready).
+              if (node.id === 'input') return node
               return {
                 ...node,
                 data: {
@@ -2171,7 +2176,11 @@ export default function SessionDetailPage() {
       data: {
         label: 'Final Code',
         agentType: 'output',
-        status: sessionData.status === 'completed' ? 'done' : 'idle',
+        // VR-46 — the Final Code artifact exists from finalization onward, so the
+        // output node reads "Complete" for every post-finalization state, not just
+        // `completed`. It used to sit at idle ("Waiting…") during
+        // awaiting_enhancement / _review / enhancing even though the code was ready.
+        status: ['completed', 'awaiting_enhancement', 'awaiting_enhancement_review', 'enhancing'].includes(sessionData.status) ? 'done' : 'idle',
       },
     })
 
@@ -2185,7 +2194,8 @@ export default function SessionDetailPage() {
         data: {
           artifactType: 'final',
           animated: false,
-          hasArtifact: sessionData.status === 'completed',
+          // VR-46 — surface the final artifact on the edge for all post-finalization states.
+          hasArtifact: ['completed', 'awaiting_enhancement', 'awaiting_enhancement_review', 'enhancing'].includes(sessionData.status),
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#4B5563' },
       })
@@ -5196,6 +5206,22 @@ export default function SessionDetailPage() {
             Iter {Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1}/{session.max_iterations || 5} &bull; {workflowState.phase}
           </span>
         </div>
+      )}
+
+      {/* VR-46 — Generation-finished status banner. Symmetric to the running
+          Progress bar above: a clear, positive signal for the post-finalization
+          states (awaiting_enhancement / _review / completed); renders null for
+          every other state. CTAs reuse the same handlers as the header buttons. */}
+      {session && (
+        <CompletionBanner
+          status={session.status}
+          busy={enhancementLoading || actionLoading}
+          onViewResult={() => {
+            setShowCode(true)
+            pushPanel('code')
+          }}
+          onReview={handleOpenReview}
+        />
       )}
 
       {/* Main content */}
