@@ -8,14 +8,6 @@
     "duration_seconds": 90
   },
   {
-    "id": "snake",
-    "name": "Neon Snake",
-    "description": "Classic Snake with glowing trails, particle bursts, and a smooth neon gradient body. Plays right in the preview frame.",
-    "language": "javascript_browser",
-    "thumbnail": "🐍",
-    "duration_seconds": 90
-  },
-  {
     "id": "particles",
     "name": "Flow-Field Particles",
     "description": "Generative-art particle system driven by a 2D curl-noise flow field. 5 palettes, real-time controls, interactive pointer disturbance.",
