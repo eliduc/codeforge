@@ -141,8 +141,8 @@ function DemoCard({
           background:
             item.id === 'mandelbulb'
               ? 'radial-gradient(circle at 30% 40%, #5b21b6 0%, #1e1b4b 60%, #0a0918 100%)'
-              : item.id === 'snake'
-              ? 'radial-gradient(circle at center, #064e3b 0%, #052e2b 60%, #04060c 100%)'
+              : item.id === 'life'
+              ? 'radial-gradient(circle at center, #0c4a6e 0%, #082f49 55%, #04060c 100%)'
               : item.id === 'particles'
               ? 'radial-gradient(circle at 60% 40%, #831843 0%, #1e1b4b 60%, #05030a 100%)'
               : 'radial-gradient(circle at center, #0c4a6e 0%, #1e1b4b 60%, #000 100%)',
@@ -152,9 +152,7 @@ function DemoCard({
           backgroundImage:
             'repeating-linear-gradient(45deg, rgba(255,255,255,0.04) 0 2px, transparent 2px 8px)',
         }} />
-        <div className="text-6xl drop-shadow-[0_0_20px_rgba(255,255,255,0.4)] group-hover:scale-110 transition-transform">
-          {item.thumbnail || '✨'}
-        </div>
+        <DemoThumbnail id={item.id} fallback={item.thumbnail} />
       </div>
       <div className="p-3 flex flex-col flex-1">
         <div className="font-semibold text-white text-sm leading-tight mb-1">{item.name}</div>
@@ -178,6 +176,110 @@ function DemoCard({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * VR-51 — illustrated demo thumbnails. The emoji thumbnails (🌐 / 🦠 / ✨) read
+ * as generic, so each known demo gets an inline-SVG illustration that conveys
+ * what the app actually is. Inline SVG keeps it crisp at any size, themeable,
+ * and asset-pipeline-free. Unknown ids fall back to the emoji from index.json.
+ */
+function DemoThumbnail({ id, fallback }: { id: string; fallback?: string }) {
+  const cls = 'h-28 w-auto group-hover:scale-110 transition-transform duration-300'
+
+  if (id === 'mandelbulb') {
+    // Ray-marched Mandelbulb → a glowing self-similar cluster of 3D bulbs.
+    const sats: [number, number][] = [[100, 28], [138, 50], [138, 94], [100, 116], [62, 94], [62, 50]]
+    const buds: [number, number][] = [[164, 72], [132, 17], [68, 17], [36, 72], [68, 127], [132, 127]]
+    return (
+      <svg viewBox="0 0 200 150" className={cls} style={{ filter: 'drop-shadow(0 0 10px rgba(192,38,211,0.45))' }} aria-hidden="true">
+        <defs>
+          <radialGradient id="mb-bulb" cx="36%" cy="30%" r="75%">
+            <stop offset="0%" stopColor="#fbcfe8" />
+            <stop offset="35%" stopColor="#e879f9" />
+            <stop offset="72%" stopColor="#a21caf" />
+            <stop offset="100%" stopColor="#3b0764" />
+          </radialGradient>
+          <radialGradient id="mb-halo" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#c026d3" stopOpacity="0.5" />
+            <stop offset="100%" stopColor="#c026d3" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <circle cx="100" cy="72" r="74" fill="url(#mb-halo)" />
+        {buds.map(([cx, cy], i) => <circle key={`b${i}`} cx={cx} cy={cy} r="7" fill="url(#mb-bulb)" />)}
+        {sats.map(([cx, cy], i) => <circle key={`s${i}`} cx={cx} cy={cy} r="17" fill="url(#mb-bulb)" />)}
+        <circle cx="100" cy="72" r="36" fill="url(#mb-bulb)" />
+        <ellipse cx="88" cy="60" rx="9" ry="6" fill="#fdf4ff" opacity="0.7" />
+      </svg>
+    )
+  }
+
+  if (id === 'life') {
+    // Conway's Game of Life → the iconic glider + a still-life block on a
+    // glowing grid, in the neon-cyan style of the generated app.
+    const cells: [number, number][] = [
+      [78, 26], [98, 46], [58, 66], [78, 66], [98, 66], // glider
+      [130, 90], [150, 90], [130, 110], [150, 110],     // block (still life)
+      [40, 40], [162, 40],                              // accents
+    ]
+    return (
+      <svg viewBox="0 0 200 150" className={cls} aria-hidden="true">
+        <defs>
+          <linearGradient id="gol-cell" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#a5f3fc" />
+            <stop offset="55%" stopColor="#22d3ee" />
+            <stop offset="100%" stopColor="#0891b2" />
+          </linearGradient>
+          <filter id="gol-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3.2" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <g stroke="#22d3ee" strokeOpacity="0.13" strokeWidth="1">
+          {[20, 40, 60, 80, 100, 120, 140, 160, 180].map(x => <line key={`v${x}`} x1={x} y1="14" x2={x} y2="136" />)}
+          {[22, 42, 62, 82, 102, 122].map(y => <line key={`h${y}`} x1="20" y1={y} x2="180" y2={y} />)}
+        </g>
+        <g filter="url(#gol-glow)">
+          {cells.map(([x, y], i) => <rect key={i} x={x} y={y} width="16" height="16" rx="3" fill="url(#gol-cell)" />)}
+        </g>
+      </svg>
+    )
+  }
+
+  if (id === 'particles') {
+    // Flow-field particle system → glowing curl-noise streamlines + particles.
+    const dots: [number, number][] = [[188, 38], [188, 96], [150, 79], [100, 84], [60, 57], [120, 66]]
+    return (
+      <svg viewBox="0 0 200 150" className={cls} aria-hidden="true">
+        <defs>
+          <linearGradient id="pf-stroke" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#a78bfa" />
+            <stop offset="50%" stopColor="#f472b6" />
+            <stop offset="100%" stopColor="#fb923c" />
+          </linearGradient>
+          <filter id="pf-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2.2" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <g fill="none" stroke="url(#pf-stroke)" strokeWidth="2.5" strokeLinecap="round" filter="url(#pf-glow)" opacity="0.92">
+          <path d="M14 40 C 60 18, 120 72, 188 36" />
+          <path d="M14 70 C 70 54, 110 102, 188 66" />
+          <path d="M14 100 C 60 96, 120 58, 188 96" />
+          <path d="M14 124 C 80 122, 120 92, 188 120" />
+        </g>
+        <g fill="#fde68a" filter="url(#pf-glow)">
+          {dots.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="3.2" />)}
+        </g>
+      </svg>
+    )
+  }
+
+  return (
+    <div className="text-6xl drop-shadow-[0_0_20px_rgba(255,255,255,0.4)] group-hover:scale-110 transition-transform">
+      {fallback || '✨'}
     </div>
   )
 }
