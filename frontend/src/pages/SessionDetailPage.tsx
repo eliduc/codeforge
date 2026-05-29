@@ -2021,6 +2021,18 @@ export default function SessionDetailPage() {
     coders.forEach((coder, i) => {
       const y = START_Y + i * VERTICAL_GAP
       const nodeId = `coder-${coder.agent_index}`
+
+      // VR-47 — run→fix badge data from the latest persisted code_version for
+      // this coder (reload-safe; live runs also refresh it via WS events).
+      const coderCVs = (((sessionData as any).code_versions ?? []) as Array<{
+        coder_index: number; iteration: number; status: string; fix_attempts?: number
+      }>).filter(cv => cv.coder_index === coder.agent_index)
+      const latestCV = coderCVs.length
+        ? coderCVs.reduce((a, b) => ((b.iteration ?? 0) >= (a.iteration ?? 0) ? b : a))
+        : null
+      const coderRunFixCount = latestCV?.fix_attempts ?? 0
+      const coderCvStatus = latestCV ? String(latestCV.status) : ''
+      const coderRunFixClean = coderCvStatus === 'tested' || coderCvStatus === 'finalized'
       
       newNodes.push({
         id: nodeId,
@@ -2036,6 +2048,10 @@ export default function SessionDetailPage() {
           iteration: sessionData.current_iteration,
           tokensUsed: 0,
           costUsd: 0,
+          // VR-47 — run→fix badge (persistent on the finished node).
+          runFixCount: coderRunFixCount,
+          runFixClean: coderRunFixClean,
+          maxFixAttempts: sessionData.max_fix_attempts,
           onEditClick: makeEditHandler(nodeId, 'coder', coder.agent_index),
         },
       })
@@ -2798,8 +2814,12 @@ export default function SessionDetailPage() {
           const success = data.success as boolean
           
           if (success) {
-            // Execution succeeded, go back to done state
-            updateNodeStatus('coder', coderIndex, 'done')
+            // Execution succeeded, go back to done state.
+            // VR-47 — record the run→fix outcome for the persistent green badge.
+            updateNodeStatus('coder', coderIndex, 'done', {
+              runFixCount: data.attempt as number,
+              runFixClean: true,
+            })
           }
           // If not success, fixing_started will follow
         }
@@ -3380,6 +3400,9 @@ export default function SessionDetailPage() {
               issuesFound: (data?.issues_found as number) ?? node.data.issuesFound,
               fixAttempt: (data?.fixAttempt as number) ?? node.data.fixAttempt,
               maxFixAttempts: (data?.maxFixAttempts as number) ?? node.data.maxFixAttempts,
+              // VR-47 — run→fix badge data; preserved across updates unless set.
+              runFixCount: (data?.runFixCount as number) ?? node.data.runFixCount,
+              runFixClean: (data && 'runFixClean' in data) ? (data.runFixClean as boolean) : node.data.runFixClean,
               // Preserve timeout fields unless explicitly set in data (even to undefined = clear)
               timeoutAt: data && 'timeoutAt' in data
                 ? (data.timeoutAt as number | undefined)

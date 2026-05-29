@@ -1381,7 +1381,7 @@ class WorkflowOrchestrator:
                 logger.info(f"Coder {coder.agent_index}: post-pipeline sandbox, enable_execution={enable_execution}")
                 if enable_execution:
                     max_fix_attempts = self.session.max_fix_attempts
-                    final_code, exec_result = await self._execute_and_fix_code(
+                    final_code, exec_result, fix_attempts = await self._execute_and_fix_code(
                         coder=coder,
                         code=code,
                         max_attempts=max_fix_attempts,
@@ -1390,7 +1390,7 @@ class WorkflowOrchestrator:
                     self.state.execution_results[coder.agent_index] = exec_result.to_dict()
                     self.state.code_versions[coder.agent_index] = final_code
 
-                    await self._update_code_version_content(coder.agent_index, final_code, exec_result)
+                    await self._update_code_version_content(coder.agent_index, final_code, exec_result, fix_attempts=fix_attempts)
 
                     # Feature #7: test-driven mode mismatch detection
                     expected = getattr(self.session, "expected_output", None)
@@ -1575,7 +1575,7 @@ class WorkflowOrchestrator:
                     logger.info(f"Coder {coder.agent_index}: post-gather sandbox, enable_execution={enable_execution}")
                     if enable_execution:
                         max_fix_attempts = self.session.max_fix_attempts
-                        final_code, exec_result = await self._execute_and_fix_code(
+                        final_code, exec_result, fix_attempts = await self._execute_and_fix_code(
                             coder=coder,
                             code=code,
                             max_attempts=max_fix_attempts,
@@ -1586,7 +1586,7 @@ class WorkflowOrchestrator:
                         self.state.code_versions[coder.agent_index] = final_code
 
                         # Update DB code_version with the fixed code and save execution result
-                        await self._update_code_version_content(coder.agent_index, final_code, exec_result)
+                        await self._update_code_version_content(coder.agent_index, final_code, exec_result, fix_attempts=fix_attempts)
 
                         # Feature #7: test-driven mode.
                         # If session.expected_output is set, compare actual stdout to it.
@@ -1981,7 +1981,7 @@ class WorkflowOrchestrator:
         coder: CoderAgent,
         code: str,
         max_attempts: int = 3,
-    ) -> tuple[str, ExecutionResult]:
+    ) -> tuple[str, ExecutionResult, int]:
         """
         Execute code and attempt to fix it if execution fails.
 
@@ -2029,14 +2029,16 @@ class WorkflowOrchestrator:
 
             # If execution succeeded, we're done
             if exec_result.success:
-                return current_code, exec_result
+                # VR-47 — attempt is 0-based; +1 = runs performed to reach clean.
+                return current_code, exec_result, attempt + 1
 
             # If this was the last attempt, return with failure
             if attempt >= max_attempts - 1:
                 logger.warning(
                     f"Coder {coder.agent_index} code execution failed after {max_attempts} attempts"
                 )
-                return current_code, exec_result
+                # VR-47 — exhausted the fix limit; attempts used == max_attempts.
+                return current_code, exec_result, attempt + 1
 
             # Emit fixing event
             await self.emit_event("code_fixing_started", {
@@ -2085,13 +2087,14 @@ class WorkflowOrchestrator:
                 })
 
         # This shouldn't be reached, but return current state
-        return current_code, exec_result
+        return current_code, exec_result, max_attempts
 
     async def _update_code_version_content(
         self,
         coder_index: int,
         fixed_code: str,
         exec_result: ExecutionResult,
+        fix_attempts: int = 0,
     ) -> None:
         """Update existing code_version with sandbox-fixed code and save execution result.
 
@@ -2121,6 +2124,8 @@ class WorkflowOrchestrator:
                     # Update code content with sandbox-fixed version
                     cv.code_content = fixed_code
                     cv.status = CodeVersionStatus.TESTED if exec_result.success else CodeVersionStatus.GENERATED
+                    # VR-47 — persist run→fix attempt count for the Coder node badge.
+                    cv.fix_attempts = fix_attempts
 
                     # Save execution result linked to this code_version
                     execution = CodeExecution(

@@ -42,6 +42,10 @@ export interface AgentNodeData extends Record<string, unknown> {
   // Code execution fields
   fixAttempt?: number
   maxFixAttempts?: number
+  // VR-47 — persistent run→fix badge data, set when the coder finishes. Survives
+  // a reload (populated from the code_version) and live runs (from WS events).
+  runFixCount?: number      // number of run→fix attempts performed (1 = clean first try)
+  runFixClean?: boolean     // true = code ran clean; false = hit max_fix_attempts
   // Countdown timers: unix timestamps (ms) when each timeout expires
   timeoutAt?: number              // legacy / generic (kept for compat)
   agentTimeoutAt?: number         // overall agent timeout (asyncio.wait_for)
@@ -233,6 +237,13 @@ function AgentNode({ data, selected }: AgentNodeProps) {
       return data.status_text
     }
     if (isExecuting) {
+      // VR-47 — the coder's self-check is labeled "Checking" (distinct from the
+      // separate Tester agents) and surfaces the run number when known.
+      if (data.agentType === 'coder') {
+        return (data.fixAttempt && data.maxFixAttempts)
+          ? `Checking… (run ${data.fixAttempt}/${data.maxFixAttempts})`
+          : 'Checking…'
+      }
       return 'Executing...'
     }
     if (isFixing) {
@@ -555,6 +566,31 @@ function AgentNode({ data, selected }: AgentNodeProps) {
           )}
         </div>
         
+        {/* VR-47 — persistent run→fix badge. Stays on the Coder node after it
+            finishes so you can see how many run→fix iterations the code needed
+            to become error-free. Green = ran clean; yellow = hit the
+            max_fix_attempts limit (code still failing). */}
+        {data.agentType === 'coder' && data.status === 'done' && typeof data.runFixCount === 'number' && data.runFixCount > 0 && (
+          <div className="mb-2">
+            <span
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                data.runFixClean
+                  ? 'bg-green-500/20 text-green-300 border-green-500/40'
+                  : 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40'
+              }`}
+              data-testid="runfix-badge"
+              data-clean={data.runFixClean ? 'true' : 'false'}
+              title={data.runFixClean
+                ? `Code ran clean after ${data.runFixCount} run${data.runFixCount > 1 ? 's' : ''}`
+                : `Reached the fix limit (${data.runFixCount}/${data.maxFixAttempts ?? data.runFixCount}) — code still failing`}
+            >
+              {data.runFixClean
+                ? `✓ ${data.runFixCount} run${data.runFixCount > 1 ? 's' : ''}`
+                : `⚠ ${data.runFixCount}/${data.maxFixAttempts ?? data.runFixCount}`}
+            </span>
+          </div>
+        )}
+
         {/* Streaming LLM output — Улучшатели#3 wave 2 #4.
             Decision (documented inline per spec): a node is too tiny to host
             scroll/copy ergonomically inline, and adding a DetailPanel round-trip

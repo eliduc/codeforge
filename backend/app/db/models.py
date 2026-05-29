@@ -270,6 +270,11 @@ class CodeVersion(Base):
     file_structure: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     analysis: Mapped[str | None] = mapped_column(Text)
     status: Mapped[CodeVersionStatus] = mapped_column(String(20), default=CodeVersionStatus.GENERATED)
+    # VR-47 — number of run→fix attempts the sandbox executor performed for this
+    # version (1 = ran clean on the first try; capped at session.max_fix_attempts).
+    # Persisted so the Coder node's run-fix badge survives a reload of a finished
+    # session, where the live WS events that carried the attempt count are gone.
+    fix_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
