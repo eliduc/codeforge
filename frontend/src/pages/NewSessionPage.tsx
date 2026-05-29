@@ -27,6 +27,11 @@ const LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   // for visual specs; expose it as a selectable option so users can pick it
   // explicitly and so the "Switch" button maps to a visible option.
   { value: 'javascript_browser', label: 'JavaScript (Browser)' },
+  // VR-45 — TypeScript (Browser) is the typed sibling of javascript_browser:
+  // identical headless-Chromium render path, already accepted by the backend
+  // (_KNOWN_LANGUAGES) and validated by the sandbox. Surfaced here for parity
+  // with JS (Browser); was missing from the curated list since the start.
+  { value: 'typescript_browser', label: 'TypeScript (Browser)' },
   { value: 'rust', label: 'Rust' },
   { value: 'go', label: 'Go' },
 ]
