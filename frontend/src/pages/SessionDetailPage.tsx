@@ -871,6 +871,44 @@ const THINKING_EFFORT_OPTIONS = [
   { value: 'max', label: 'Max' },
 ]
 
+// VR-58 — Thinking-effort fallback heuristic.
+// The backend reports per-model thinking levels via model_capabilities, and
+// that is the source of truth. But if the capabilities map has NO entry for a
+// model at all (e.g. a freshly-released model name the registry hasn't been
+// taught yet, or a custom/typed model), we must not silently lock the user
+// out of the thinking controls. In that gap-only case we infer the supported
+// levels from the model family. Note: this fires ONLY when caps are *absent*
+// (modelCaps === undefined); an explicit empty list from the backend ("this
+// model has no thinking mode") is always respected. The provider itself also
+// gates thinking on the server, so an over-permissive guess here is harmless.
+function inferThinkingEfforts(provider: string, model: string): string[] {
+  const m = (model || '').toLowerCase()
+  const p = (provider || '').toLowerCase()
+  if (p === 'anthropic') {
+    // Claude 4+ Opus/Sonnet support extended/adaptive thinking; Opus adds "max".
+    if (/opus/.test(m)) return ['low', 'medium', 'high', 'max']
+    if (/sonnet/.test(m)) return ['low', 'medium', 'high']
+    return []
+  }
+  if (p === 'google') {
+    // Gemini 2.5+/3.x Pro & Flash expose a thinking budget.
+    if (/gemini/.test(m) && /(pro|flash|2\.5|2\.6|3\.|thinking)/.test(m)) {
+      return ['low', 'medium', 'high', 'max']
+    }
+    return []
+  }
+  if (p === 'openai') {
+    // o-series and GPT-5 reasoning models accept an effort level.
+    if (/^o\d/.test(m) || /gpt-5/.test(m)) return ['low', 'medium', 'high']
+    return []
+  }
+  if (p === 'grok') {
+    if (/(reason|grok-?[34])/.test(m)) return ['low', 'medium', 'high']
+    return []
+  }
+  return []
+}
+
 function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: {
   agentType: string; x: number; y: number;
   existingConfig?: { llm_provider: string; llm_model: string; thinking_effort?: string | null; custom_prompt?: string | null; enabled?: boolean; temperature?: number; max_tokens?: number };
@@ -911,17 +949,30 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
   const currentProvider = providers.find(p => p.name === provider)
   const modelsForProvider = currentProvider?.models || []
 
-  // Get thinking effort options for selected model from provider capabilities
+  // VR-58 — Per-model thinking configuration.
+  // Source of truth = backend model_capabilities. `modelCaps === undefined`
+  // means the registry has no entry for this model (NOT "no thinking"): only
+  // in that gap do we fall back to a family heuristic so the controls aren't
+  // wrongly locked. An explicit [] from the backend is respected as "this
+  // model has no thinking mode".
   const modelCaps = currentProvider?.model_capabilities?.[model]
-  const supportedEfforts = modelCaps?.thinking_effort_options || []
-  const effortOptions = [
-    { value: '', label: 'Auto' },
-    ...THINKING_EFFORT_OPTIONS.filter(o => o.value && supportedEfforts.includes(o.value)),
-  ]
-  // If no efforts supported, show only "None"
-  const finalEffortOptions = supportedEfforts.length > 0
-    ? effortOptions
-    : [{ value: '', label: 'N/A' }]
+  const capsEfforts: string[] = modelCaps?.thinking_effort_options || []
+  const effectiveEfforts = capsEfforts.length > 0
+    ? capsEfforts
+    : (modelCaps === undefined ? inferThinkingEfforts(provider, model) : [])
+  const supportsThinking = effectiveEfforts.length > 0
+  // Ordered level options this model actually supports (no "Off"/Auto here —
+  // the Off state lives in the separate mode control).
+  const levelOptions = THINKING_EFFORT_OPTIONS.filter(o => o.value && effectiveEfforts.includes(o.value))
+  // Sensible default level when the user switches thinking ON: prefer "high"
+  // for best code quality, else the strongest level the model supports.
+  const defaultEffort = effectiveEfforts.includes('high')
+    ? 'high'
+    : (levelOptions.length > 0 ? levelOptions[levelOptions.length - 1].value : 'medium')
+  // Per-model output-token ceiling — also a model property surfaced to the user.
+  const modelMaxTokens = typeof modelCaps?.max_output_tokens === 'number'
+    ? modelCaps.max_output_tokens
+    : 128000
 
   // Auto-reposition if popup overflows the container (run once on mount)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -1032,32 +1083,55 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
             </select>
           </div>
 
-          {/* Thinking Effort */}
+          {/* Thinking — mode (Off/On) + level. VR-58
+              Surfaces the model's thinking properties explicitly ("thinking
+              mode и его уровень"). Both controls write the single
+              `thinkingEffort` value the backend already understands:
+                Off -> ''            On -> <level> (low|medium|high|max)
+              They are disabled when the model has no thinking/reasoning mode. */}
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1" htmlFor="agent-thinking-effort-select">Thinking Effort</label>
-            <select
-              id="agent-thinking-effort-select"
-              value={thinkingEffort}
-              onChange={e => setThinkingEffort(e.target.value)}
-              disabled={supportedEfforts.length === 0}
-              aria-label="Thinking effort"
-              className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {finalEffortOptions.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            {thinkingEffort === 'max' && !/opus/i.test(model) && (
-              <div className="mt-1 text-[10px] text-amber-400 leading-tight">
-                Max effort only supported on Opus models
+            <label className="block text-xs font-medium text-gray-400 mb-1">Thinking</label>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                id="agent-thinking-mode-select"
+                aria-label="Thinking mode"
+                value={thinkingEffort ? 'on' : 'off'}
+                disabled={!supportsThinking}
+                onChange={e => setThinkingEffort(e.target.value === 'on' ? defaultEffort : '')}
+                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+              <select
+                id="agent-thinking-effort-select"
+                aria-label="Thinking level"
+                value={supportsThinking ? (thinkingEffort || defaultEffort) : ''}
+                disabled={!supportsThinking || !thinkingEffort}
+                onChange={e => setThinkingEffort(e.target.value)}
+                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {levelOptions.length > 0
+                  ? levelOptions.map(o => (<option key={o.value} value={o.value}>{o.label}</option>))
+                  : (<option value="">—</option>)}
+              </select>
+            </div>
+            {!supportsThinking && (
+              <div className="mt-1 text-[10px] text-gray-500 leading-tight">
+                This model has no separate thinking/reasoning mode.
               </div>
             )}
-            {/* VR-55 — reasoning model with thinking OFF: nudge to enable it,
-                since Opus/Sonnet without extended thinking is noticeably weaker
-                on hard code and the default here is "off" (Auto). */}
-            {supportedEfforts.length > 0 && !thinkingEffort && /opus|sonnet/i.test(model) && (
+            {thinkingEffort === 'max' && !/opus/i.test(model) && (
               <div className="mt-1 text-[10px] text-amber-400 leading-tight">
-                ⚠ Thinking is off. {model} is a reasoning model — pick an effort (e.g. Medium/High) for noticeably better code quality.
+                Max level is only supported on Opus models.
+              </div>
+            )}
+            {/* VR-55/58 — reasoning model with thinking OFF: nudge to enable it,
+                since Opus/Sonnet without extended thinking is noticeably weaker
+                on hard code and the default here is Off. */}
+            {supportsThinking && !thinkingEffort && /opus|sonnet/i.test(model) && (
+              <div className="mt-1 text-[10px] text-amber-400 leading-tight">
+                ⚠ Thinking is off. {model} is a reasoning model — turn it On (Medium/High) for noticeably better code quality.
               </div>
             )}
           </div>
@@ -1084,15 +1158,18 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
               <input
                 type="number"
                 min={1000}
-                max={128000}
+                max={modelMaxTokens}
                 step={1000}
                 value={maxTokens}
                 onChange={e => {
                   const v = parseInt(e.target.value, 10)
-                  setMaxTokens(Number.isFinite(v) ? v : 4096)
+                  // VR-58 — clamp to the selected model's real output ceiling
+                  // (the provider auto-clamps server-side anyway).
+                  setMaxTokens(Number.isFinite(v) ? Math.min(v, modelMaxTokens) : 4096)
                 }}
                 className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
+              <div className="mt-1 text-[10px] text-gray-500 leading-tight">Model max: {modelMaxTokens.toLocaleString()}</div>
             </div>
           </div>
 
