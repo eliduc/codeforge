@@ -331,7 +331,11 @@ export default function Layout({ children }: LayoutProps) {
   ]
 
   return (
-    <div className="min-h-screen bg-cf-bg flex">
+    // VR-52 — h-screen (definite height), not min-h-screen, so flex-1 +
+    // overflow-auto regions (incl. the demo player's narration panel) bound to
+    // the viewport and scroll internally instead of growing past it. main is
+    // overflow-hidden and every page self-scrolls, so auth pages are unaffected.
+    <div className="h-screen bg-cf-bg flex">
       {/* Sidebar */}
       <aside
         className={clsx(

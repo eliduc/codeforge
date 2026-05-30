@@ -25,7 +25,12 @@ function PublicChrome({ children }: { children: React.ReactNode }) {
     return <Layout>{children}</Layout>
   }
   return (
-    <div className="min-h-screen bg-cf-bg flex flex-col">
+    // VR-52 — h-screen (definite viewport height), not min-h-screen: the demo
+    // player's narration panel uses flex-1 + overflow-y-auto, which only engages
+    // when an ancestor has a DEFINITE height. With min-h-screen the panel grew
+    // past the viewport and pushed its "Continue" footer off-screen. main is
+    // already overflow-hidden and every page self-scrolls, so this is safe.
+    <div className="h-screen bg-cf-bg flex flex-col">
       <header className="flex items-center justify-between px-4 py-3 border-b border-cf-border bg-cf-panel">
         <Link to="/" className="flex items-center gap-2 text-cf-text">
           <div className="w-7 h-7 bg-gradient-to-br from-cf-primary to-cf-secondary rounded-lg flex items-center justify-center">
