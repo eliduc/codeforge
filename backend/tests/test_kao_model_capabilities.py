@@ -634,35 +634,27 @@ def test_google_caps_non_thinking_empty(model):
 
 
 @pytest.mark.parametrize("model", ["gemini-4-pro", "gemini-4.0-pro", "gemini-5-pro", "gemini-4-flash"])
-def test_google_future_flagship_thinking_REGRESSION(model):
-    """КАО-FINDING (SERIOUS): a FUTURE Gemini 4+/5+ flagship currently reports
-    NO thinking options because GoogleProvider still uses a hardcoded
-    THINKING_MODELS substring list (not a version-agnostic predicate like the
-    other three providers).
-
-    This test PINS the current buggy behavior so the suite is green and the
-    regression is tracked. When the fixer migrates GoogleProvider to a
-    parser-based predicate (e.g. version>=2.5 thinking, like _parse_gemini_model
-    already provides), FLIP this assertion to expect
-    ['low','medium','high','max'] and delete the REGRESSION suffix.
+def test_google_future_flagship_thinking(model):
+    """КАО#VR-32 (was SERIOUS, now FIXED): a FUTURE Gemini 4+/5+ flagship must
+    expose the full thinking set. GoogleProvider._supports_thinking is now
+    version-agnostic (version>=2.5 + pro/flash/flash-lite tier, via
+    _parse_gemini_model) instead of a hardcoded THINKING_MODELS substring list,
+    so future majors are recognized without a code edit — matching the other
+    three providers.
     """
     caps = _google().get_model_capabilities(model)
-    # CURRENT (buggy) behavior:
-    assert caps["thinking_effort_options"] == [], (
-        f"{model}: if this now returns a non-empty set, the Google "
-        "version-agnostic fix has landed — update this test to assert "
-        "['low','medium','high','max']."
-    )
+    assert caps["thinking_effort_options"] == _GEMINI_FULL, model
 
 
-def test_google_supports_thinking_substring_collision_REGRESSION():
-    """КАО-FINDING (MINOR): the 'gemini-3' substring also matches 'gemini-30',
-    'gemini-31', etc. — accidental but currently harmless (those are thinking
-    models anyway). Pinned to document the brittleness; a parser-based predicate
-    would remove the collision."""
+def test_google_supports_thinking_high_versions():
+    """КАО#VR-32: high future majors (gemini-30/31) are recognized as thinking
+    via the version-agnostic predicate (version>=2.5 + pro/flash tier), not a
+    brittle 'gemini-3' substring match; 2.0 and below correctly do NOT think."""
     p = _google()
     assert p._supports_thinking("gemini-30-pro") is True
     assert p._supports_thinking("gemini-31-flash") is True
+    assert p._supports_thinking("gemini-2.0-pro") is False
+    assert p._supports_thinking("gemini-1.5-pro") is False
 
 
 def test_google_caps_include_max_output_tokens():

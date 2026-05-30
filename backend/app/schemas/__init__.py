@@ -62,12 +62,16 @@ class AgentConfigCreate(BaseModel):
     agent_type: AgentType
     agent_index: int = 0
     llm_provider: str
-    llm_model: str
+    # КАО#VR-59 — bound string fields to their DB column sizes (AgentConfig:
+    # llm_model String(100), thinking_effort String(20)). Without this an
+    # over-length value (e.g. a fuzzed thinking_effort) overflowed the column
+    # at INSERT and surfaced as a 500 instead of a clean 422.
+    llm_model: str = Field(max_length=100)
     prompt_template_id: int | None = None
     custom_prompt: str | None = Field(default=None, max_length=50000)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=200000)
-    thinking_effort: str | None = None
+    thinking_effort: str | None = Field(default=None, max_length=20)
     enabled: bool = True
 
     @field_validator("llm_provider")
@@ -83,13 +87,26 @@ class AgentConfigUpdate(BaseModel):
     """Schema for updating an agent configuration."""
 
     llm_provider: str | None = None
-    llm_model: str | None = None
+    llm_model: str | None = Field(default=None, max_length=100)  # КАО#VR-59 — DB String(100)
     prompt_template_id: int | None = None
     custom_prompt: str | None = Field(default=None, max_length=50000)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1, le=200000)
-    thinking_effort: str | None = None
+    thinking_effort: str | None = Field(default=None, max_length=20)  # КАО#VR-59 — DB String(20)
     enabled: bool | None = None
+
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_provider(cls, v: str | None) -> str | None:
+        # КАО#VR-59 — mirror AgentConfigCreate's whitelist. It was missing here,
+        # so PATCH /agents/{id} accepted arbitrary provider strings (owner-only,
+        # but it could persist a junk provider and break the run).
+        if v is None:
+            return v
+        valid = {"openai", "anthropic", "google", "grok", "ollama"}
+        if v.lower() not in valid:
+            raise ValueError(f"Unknown LLM provider: {v}. Must be one of: {valid}")
+        return v.lower()
 
 
 class AgentConfigResponse(BaseSchema):

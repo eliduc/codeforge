@@ -117,6 +117,8 @@ import type { CheckpointResponse } from '../services/api'
 import type { SessionResponse, AgentConfigResponse, FinalResultResponse, ExecutionResult, ReconnectingWebSocket, WSConnectionState } from '../services/api'
 import type { EnhancementSuggestion, CuratedSuggestion, EnhancerAgentConfig, EnhancerSummarizerConfig, EnhanceRequest, AttachmentInfo } from '../types'
 import { useProvidersStore } from '../stores/providersStore'
+// КАО#VR-58 — pure thinking-effort logic extracted for unit-testability
+import { THINKING_EFFORT_OPTIONS, inferThinkingEfforts } from '../lib/thinkingEfforts'
 import SpecificationsDialog from '../components/common/SpecificationsDialog'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import {
@@ -862,55 +864,10 @@ const agentPopupMeta: Record<string, { icon: React.ElementType; label: string; g
   enhancer_summary: { icon: Sparkles, label: 'Enh. Summarizer', gradient: 'from-fuchsia-500 to-purple-600' },
 }
 
-// Floating config popup for agent nodes (provider/model selector)
-const THINKING_EFFORT_OPTIONS = [
-  { value: '', label: 'Auto' },
-  { value: 'minimal', label: 'Minimal' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'max', label: 'Max' },
-]
-
-// VR-58 — Thinking-effort fallback heuristic.
-// The backend reports per-model thinking levels via model_capabilities, and
-// that is the source of truth. But if the capabilities map has NO entry for a
-// model at all (e.g. a freshly-released model name the registry hasn't been
-// taught yet, or a custom/typed model), we must not silently lock the user
-// out of the thinking controls. In that gap-only case we infer the supported
-// levels from the model family. Note: this fires ONLY when caps are *absent*
-// (modelCaps === undefined); an explicit empty list from the backend ("this
-// model has no thinking mode") is always respected. The provider itself also
-// gates thinking on the server, so an over-permissive guess here is harmless.
-function inferThinkingEfforts(provider: string, model: string): string[] {
-  const m = (model || '').toLowerCase()
-  const p = (provider || '').toLowerCase()
-  if (p === 'anthropic') {
-    // Claude 4+ Opus/Sonnet support extended/adaptive thinking; Opus adds "max".
-    if (/opus/.test(m)) return ['low', 'medium', 'high', 'max']
-    if (/sonnet/.test(m)) return ['low', 'medium', 'high']
-    return []
-  }
-  if (p === 'google') {
-    // Gemini 2.5+/3.x Pro & Flash expose a thinking budget.
-    if (/gemini/.test(m) && /(pro|flash|2\.5|2\.6|3\.|thinking)/.test(m)) {
-      return ['low', 'medium', 'high', 'max']
-    }
-    return []
-  }
-  if (p === 'openai') {
-    // o-series pure-reasoning models: low/medium/high.
-    if (/^o\d/.test(m)) return ['low', 'medium', 'high']
-    // GPT-5+ chat models add "minimal" below "low".
-    if (/gpt-[5-9]/.test(m)) return ['minimal', 'low', 'medium', 'high']
-    return []
-  }
-  if (p === 'grok') {
-    if (/(reason|grok-?[34])/.test(m)) return ['low', 'medium', 'high']
-    return []
-  }
-  return []
-}
+// Floating config popup for agent nodes (provider/model selector).
+// КАО#VR-58 — THINKING_EFFORT_OPTIONS and inferThinkingEfforts were extracted
+// to ../lib/thinkingEfforts so the pure logic is unit-testable in isolation.
+// Behavior is unchanged; they are imported at the top of this file.
 
 function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: {
   agentType: string; x: number; y: number;
@@ -1094,7 +1051,8 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
               They are disabled when the model has no thinking/reasoning mode. */}
           <div>
             <label className="block text-xs font-medium text-gray-400 mb-1">Thinking</label>
-            <div className="grid grid-cols-2 gap-2">
+            {/* КАО#VR-58 — group the mode+level pair for assistive tech. */}
+            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Thinking">
               <select
                 id="agent-thinking-mode-select"
                 aria-label="Thinking mode"
@@ -1109,7 +1067,10 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
               <select
                 id="agent-thinking-effort-select"
                 aria-label="Thinking level"
-                value={supportsThinking ? (thinkingEffort || defaultEffort) : ''}
+                /* КАО#VR-58 — also require a non-empty levelOptions, else the
+                   value (defaultEffort) wouldn't match the lone "—" option →
+                   React out-of-range controlled-value warning. */
+                value={supportsThinking && levelOptions.length > 0 ? (thinkingEffort || defaultEffort) : ''}
                 disabled={!supportsThinking || !thinkingEffort}
                 onChange={e => setThinkingEffort(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1124,9 +1085,12 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
                 This model has no separate thinking/reasoning mode.
               </div>
             )}
-            {thinkingEffort === 'max' && !/opus/i.test(model) && (
+            {/* КАО#VR-58 — gate on Anthropic: only Anthropic restricts "max" to
+                Opus (Sonnet has no max). Google Gemini legitimately supports max,
+                so this note must NOT fire for non-Anthropic providers. */}
+            {thinkingEffort === 'max' && provider === 'anthropic' && !/opus/i.test(model) && (
               <div className="mt-1 text-[10px] text-amber-400 leading-tight">
-                Max level is only supported on Opus models.
+                Max level is only supported on Opus models (Anthropic).
               </div>
             )}
             {/* VR-55/58 — reasoning model with thinking OFF: nudge to enable it,

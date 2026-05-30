@@ -156,9 +156,16 @@ class GoogleProvider(BaseLLMProvider):
         self._client = None
 
     def _supports_thinking(self, model: str) -> bool:
-        """Check if model supports thinking mode."""
-        model_lower = model.lower()
-        return any(tm in model_lower for tm in self.THINKING_MODELS)
+        """Check if model supports thinking mode.
+
+        КАО#VR-32 — version-agnostic: Gemini 2.5+ pro/flash/flash-lite (and all
+        future majors — 3.x, 4.x, …) support thinking; 2.0 and below do not.
+        Replaces the hardcoded THINKING_MODELS substring list, so future
+        flagships (e.g. gemini-4-pro) are recognized without a code edit
+        (the bug that left every other provider version-agnostic but Google not).
+        """
+        version, tier, _ = _parse_gemini_model(model)
+        return version >= 2.5 and tier in ("pro", "flash", "flash-lite")
 
     def _family_of(self, model: str) -> str | None:
         """Return just the tier key ('pro' | 'flash' | 'flash-lite' | 'lite')

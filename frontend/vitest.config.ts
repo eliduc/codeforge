@@ -10,7 +10,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/__tests__/setup.ts'],
-    include: ['src/__tests__/**/*.test.{ts,tsx}'],
+    // КАО#VR-58 — also discover co-located lib unit tests (e.g.
+    // src/lib/thinkingEfforts.test.ts) alongside the __tests__ suite.
+    include: ['src/__tests__/**/*.test.{ts,tsx}', 'src/lib/**/*.test.{ts,tsx}'],
     css: false,
   },
 })
