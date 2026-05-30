@@ -141,6 +141,19 @@ class OpenAIProvider(BaseLLMProvider):
     def get_max_output_tokens(self, model: str) -> int:
         """Return the max allowed output tokens for a given OpenAI model."""
         model_lower = model.lower()
+        # КАО#VR-59 — version-agnostic first: o-series → 100k; GPT-5.1+ (any
+        # future minor) → 32768; base GPT-5 / mini / nano → 16384. The old
+        # substring table under-reported future minors (gpt-5.5 matched
+        # "gpt-5" → 16384 instead of the 5.x-class 32768).
+        parsed = _parse_openai_model(model)
+        if parsed:
+            major, minor, tier = parsed
+            if model_lower.startswith("o"):
+                return 100000
+            if major >= 5:
+                if tier in ("mini", "nano"):
+                    return 16384
+                return 32768 if minor >= 1 else 16384
         for family, limit in self.MAX_OUTPUT_TOKENS.items():
             if family in model_lower:
                 return limit
@@ -153,11 +166,17 @@ class OpenAIProvider(BaseLLMProvider):
             # o-series pure-reasoning models (o1/o3/o4…): low/medium/high.
             caps["thinking_effort_options"] = ["low", "medium", "high"]
         elif self._supports_reasoning_effort(model):
-            # VR-59 — GPT-5+ chat models expose OpenAI's full reasoning_effort
-            # set, which adds "minimal" below "low". Previously capped at
-            # [low, medium], which under-reported the model's real capability
-            # (generate() already passes any effort value straight through, so
-            # "high"/"minimal" worked — only this metadata hid them in the UI).
+            # КАО#VR-59 — GPT-5+ chat models expose OpenAI's full reasoning_effort
+            # set, which adds "minimal" below "low" (previously capped at
+            # [low, medium], under-reporting the model's real capability).
+            # LOCKSTEP INVARIANT: every level listed here is offered in the
+            # node-settings "Thinking" select, so generate()'s thinking_effort
+            # effort_map MUST map each one to a non-None reasoning_effort —
+            # otherwise the UI shows the level but the API silently ignores it
+            # and falls back to its medium default. (The earlier note here that
+            # generate() "passes any effort value straight through" was wrong for
+            # this UI path: thinking_effort goes through effort_map.get(), which
+            # had no "minimal" key and collapsed high→medium until the VR-59 fix.)
             caps["thinking_effort_options"] = ["minimal", "low", "medium", "high"]
         else:
             caps["thinking_effort_options"] = []
@@ -499,11 +518,16 @@ class OpenAIProvider(BaseLLMProvider):
         effective_effort = reasoning_effort
         if thinking_effort and not effective_effort:
             if self._is_reasoning_model(model):
-                # O-series: supports low, medium, high
-                effort_map = {"low": "low", "medium": "medium", "high": "high", "max": "high"}
+                # O-series: low/medium/high (no "minimal" tier — clamp to low)
+                effort_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "max": "high"}
             else:
-                # GPT-5.x Chat Completions: currently only supports low/medium
-                effort_map = {"low": "low", "medium": "medium", "high": "medium", "max": "medium"}
+                # КАО#VR-59 — GPT-5+ Chat Completions support OpenAI's full
+                # reasoning_effort set (minimal/low/medium/high). The old map
+                # dropped "minimal" and collapsed high/max→medium, so the
+                # node-settings UI (which offers minimal/low/medium/high for
+                # GPT-5.x) silently didn't honor those choices. OpenAI has no
+                # "max", so clamp max→high.
+                effort_map = {"minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "high"}
             effective_effort = effort_map.get(thinking_effort)
 
         if self._uses_responses_api(model):
