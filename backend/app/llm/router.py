@@ -199,6 +199,10 @@ class LLMRouter:
             )
 
         # Check model support — fall back to first available model if requested model is stale
+        # VR-54 — track the substitution so callers can surface it to the user
+        # (instead of silently swapping the model with only a log warning).
+        requested_model = model
+        model_substituted = False
         if not llm_provider.supports_model(model):
             available = llm_provider.available_models
             if available:
@@ -208,6 +212,7 @@ class LLMRouter:
                     f"Falling back to '{fallback_model}'. Available: {available}"
                 )
                 model = fallback_model
+                model_substituted = True
             else:
                 logger.error(f"Model '{model}' not in available models for {provider}: {available}")
                 return LLMError(
@@ -255,6 +260,12 @@ class LLMRouter:
                     model, result.input_tokens, result.output_tokens, result.thinking_tokens
                 )
                 result.raw_response["calculated_cost_usd"] = cost
+                # VR-54/56 — record the ACTUAL model the call used (after any
+                # substitution) so loggers/UI report the truth, not the request.
+                result.raw_response["model_used"] = model
+                if model_substituted:
+                    result.raw_response["model_requested"] = requested_model
+                    result.raw_response["model_substituted"] = True
 
             return result
 

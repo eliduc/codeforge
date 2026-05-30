@@ -711,6 +711,9 @@ class WorkflowOrchestrator:
         """Inner workflow body — extracted so run() can wrap it with a timeout."""
         try:
             await self._initialize_workflow()
+            # VR-54 — surface any configured model the provider doesn't actually
+            # offer (the router silently falls back to its first available model).
+            await self._warn_substituted_models()
             await self._run_iteration_loop()
 
             # If cancelled/stopped, do NOT run finalization — respect user intent
@@ -739,6 +742,43 @@ class WorkflowOrchestrator:
 
         except Exception as e:
             return await self._handle_workflow_exception(e)
+
+    async def _warn_substituted_models(self) -> None:
+        """VR-54 — surface (not silently swap) any configured model the provider
+        doesn't actually offer. The router falls back to the provider's first
+        available model; here we emit a ``model_substituted`` event per affected
+        agent so the user isn't unknowingly running a different / weaker model.
+        """
+        agents = list(self.coders) + list(self.testers)
+        if getattr(self, "summarizer", None):
+            agents.append(self.summarizer)
+        if getattr(self, "finalizer", None):
+            agents.append(self.finalizer)
+        seen: set[tuple[str, str]] = set()
+        for agent in agents:
+            try:
+                provider_obj = agent.llm_router.get_provider(agent.provider)
+                if not provider_obj or provider_obj.supports_model(agent.model):
+                    continue
+                available = provider_obj.available_models
+                used = available[0] if available else None
+            except Exception:
+                continue
+            key = (str(agent.provider), str(agent.model))
+            if key in seen:
+                continue
+            seen.add(key)
+            at = agent.agent_type.value if hasattr(agent.agent_type, "value") else str(agent.agent_type)
+            logger.warning(
+                f"VR-54: model '{agent.model}' not available for provider "
+                f"'{agent.provider}' ({at}); router will use '{used}' instead"
+            )
+            await self.emit_event("model_substituted", {
+                "agent_type": at,
+                "provider": str(agent.provider),
+                "requested_model": str(agent.model),
+                "used_model": used,
+            })
 
     async def _maybe_enter_visual_review(self) -> bool:
         """If the session qualifies for visual review, capture screenshots,
@@ -3416,31 +3456,40 @@ class WorkflowOrchestrator:
         provider: str,
         model: str,
     ) -> None:
-        """Save LLM request log to database."""
+        """Save LLM request log to database.
+
+        VR-56 — acquire ``_db_lock``: coders/testers run in PARALLEL on one shared
+        AsyncSession, so concurrent commits here used to collide and roll back —
+        only ~2 of dozens of calls per session ever persisted. Also log the
+        ACTUAL model used (after any router substitution), not the requested one,
+        so the audit trail truly reflects what each call hit.
+        """
+        raw = result.raw_response or {}
+        actual_model = raw.get("model_used") or model
         try:
-            request = LLMRequest(
-                session_id=self.session.id,
-                agent_type=agent_type,
-                agent_index=agent_index,
-                iteration=self.state.current_iteration,
-                prompt_sent="[see agent]",  # TODO: store full prompt
-                response_received=result.content[:10000] if result.content else "",
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                cost_usd=result.cost_usd,
-                latency_ms=result.latency_ms,
-                llm_provider=provider,
-                llm_model=model,
-                success=result.success,
-                error_message=result.error,
-            )
-            self.db.add(request)
-            await self.db.commit()
+            async with self._db_lock:
+                request = LLMRequest(
+                    session_id=self.session.id,
+                    agent_type=agent_type,
+                    agent_index=agent_index,
+                    iteration=self.state.current_iteration,
+                    prompt_sent="[see agent]",  # TODO: store full prompt
+                    response_received=result.content[:10000] if result.content else "",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cost_usd=result.cost_usd,
+                    latency_ms=result.latency_ms,
+                    llm_provider=provider,
+                    llm_model=actual_model,
+                    success=result.success,
+                    error_message=result.error,
+                )
+                self.db.add(request)
+                await self.db.commit()
         except Exception as e:
             logger.error(f"Failed to save LLM request for {agent_type} {agent_index}: {e}")
-            await self.db.rollback()
             try:
-                await self.db.refresh(self.session)
+                await self.db.rollback()
             except Exception:
                 pass
 

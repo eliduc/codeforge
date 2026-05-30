@@ -1052,6 +1052,14 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
                 Max effort only supported on Opus models
               </div>
             )}
+            {/* VR-55 — reasoning model with thinking OFF: nudge to enable it,
+                since Opus/Sonnet without extended thinking is noticeably weaker
+                on hard code and the default here is "off" (Auto). */}
+            {supportedEfforts.length > 0 && !thinkingEffort && /opus|sonnet/i.test(model) && (
+              <div className="mt-1 text-[10px] text-amber-400 leading-tight">
+                ⚠ Thinking is off. {model} is a reasoning model — pick an effort (e.g. Medium/High) for noticeably better code quality.
+              </div>
+            )}
           </div>
 
           {/* Temperature & Max Tokens */}
@@ -2721,6 +2729,18 @@ export default function SessionDetailPage() {
           } else if (agentType === 'finalizer') {
             animateEdgesFromNode(agentType, agentIndex)
           }
+        }
+        break
+
+      // VR-54 — the router fell back to a different model because the one
+      // configured isn't available for the provider. Surface it loudly so the
+      // user isn't unknowingly running a different/weaker model.
+      case 'model_substituted':
+        if (data) {
+          notify.error(
+            `Requested model "${data.requested_model}" is unavailable for ${data.provider} — running "${data.used_model}" instead. Pick an available model in the agent's settings.`,
+            { title: `Model swapped · ${data.agent_type}`, duration: 9000 }
+          )
         }
         break
 
