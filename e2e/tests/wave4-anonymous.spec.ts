@@ -210,13 +210,15 @@ test.describe('Wave-4 Anonymous — PublicChrome rendering', () => {
 // ─── Demo gallery /demos (anonymous) ─────────────────────────────────────────
 
 test.describe('Wave-4 Anonymous — /demos gallery', () => {
-  test('C1. Renders all 4 demo cards (mandelbulb, crystal, particles, snake)', async ({ page }) => {
+  // КАО#VR-58 — updated for the current 3-demo gallery (VR-48/50/51 removed
+  // "Neon Snake" + "WebGL Glass Crystal", added "Conway's Game of Life").
+  test('C1. Renders all 3 demo cards (mandelbulb, life, particles)', async ({ page }) => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true })).toBeVisible({ timeout: 15_000 })
 
     // Each card has a "Watch demo" link pointing to /demo/<id>. We assert one
     // exists per demo id by checking the href.
-    for (const id of ['mandelbulb', 'crystal', 'particles', 'snake']) {
+    for (const id of ['mandelbulb', 'life', 'particles']) {
       const link = page.locator(`a[href="/demo/${id}"]`).first()
       await expect(link, `Watch demo link for ${id}`).toBeVisible({ timeout: 15_000 })
     }
@@ -224,10 +226,10 @@ test.describe('Wave-4 Anonymous — /demos gallery', () => {
 
   test('C2. Clicking a card navigates to /demo/:templateId', async ({ page }) => {
     await page.goto('/demos')
-    const crystalLink = page.locator('a[href="/demo/crystal"]').first()
-    await expect(crystalLink).toBeVisible({ timeout: 15_000 })
-    await crystalLink.click()
-    await expect(page).toHaveURL(/\/demo\/crystal(\?|$|#)/, { timeout: 10_000 })
+    const lifeLink = page.locator('a[href="/demo/life"]').first()
+    await expect(lifeLink).toBeVisible({ timeout: 15_000 })
+    await lifeLink.click()
+    await expect(page).toHaveURL(/\/demo\/life(\?|$|#)/, { timeout: 10_000 })
   })
 
   test('C3. "Real multi-agent runs, replayed" copy present (Wave 1 P1·S)', async ({ page }) => {
@@ -235,18 +237,14 @@ test.describe('Wave-4 Anonymous — /demos gallery', () => {
     await expect(page.getByText(/Real multi-agent runs, replayed/i)).toBeVisible({ timeout: 15_000 })
   })
 
-  test('C4. Cards expose thumbnail emoji + descriptive copy', async ({ page }) => {
+  test('C4. Cards expose thumbnail + descriptive copy', async ({ page }) => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true })).toBeVisible({ timeout: 15_000 })
 
-    // Mandelbulb card description from index.json
+    // КАО#VR-58 — current 3-demo gallery (thumbnails are SVG illustrations now).
     await expect(page.getByText(/Mandelbulb 3D Attractor/i).first()).toBeVisible()
-    // Snake card
-    await expect(page.getByText(/Neon Snake/i).first()).toBeVisible()
-    // Particles card
+    await expect(page.getByText(/Game of Life/i).first()).toBeVisible()
     await expect(page.getByText(/Flow-Field Particles/i).first()).toBeVisible()
-    // Crystal card
-    await expect(page.getByText(/WebGL Glass Crystal/i).first()).toBeVisible()
   })
 })
 

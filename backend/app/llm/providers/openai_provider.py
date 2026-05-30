@@ -61,9 +61,13 @@ def _parse_openai_model(name: str) -> tuple[int, int, str] | None:
 def _supports_responses_api(model: str) -> bool:
     """KAO#VR-32 — predicate replacing hardcoded RESPONSES_API_MODELS list.
 
-    Any ``gpt-X.Y-pro`` or ``gpt-X-pro`` variant uses the Responses API.
+    Any ``gpt-X.Y-pro`` / ``gpt-X-pro`` AND o-series ``oN-pro`` (o3-pro,
+    o4-pro) variant uses the Responses API. КАО#VR-32 — o-series '-pro' was
+    previously missed, so o3-pro fell through to the Chat Completions path
+    (and would likely 400). The '-pro' SUFFIX is still required (anchored $),
+    so 'gpt-5-pro-preview' stays on Chat Completions.
     """
-    return bool(re.search(r"gpt-\d+(?:\.\d+)?-pro$", model.lower()))
+    return bool(re.search(r"(?:gpt-\d+(?:\.\d+)?|o\d+)-pro$", model.lower()))
 
 
 def _supports_reasoning_effort(model: str) -> bool:
@@ -162,7 +166,12 @@ class OpenAIProvider(BaseLLMProvider):
     def get_model_capabilities(self, model: str) -> dict:
         """Return per-model reasoning effort options for OpenAI."""
         caps: dict = {"max_output_tokens": self.get_max_output_tokens(model)}
-        if self._is_reasoning_model(model):
+        if _supports_responses_api(model):
+            # КАО#VR-32 — '-pro' models (gpt-*-pro AND o*-pro) use the Responses
+            # API path, which this client does not pass reasoning_effort to —
+            # advertise no effort options so the UI matches what generate() honors.
+            caps["thinking_effort_options"] = []
+        elif self._is_reasoning_model(model):
             # o-series pure-reasoning models (o1/o3/o4…): low/medium/high.
             caps["thinking_effort_options"] = ["low", "medium", "high"]
         elif self._supports_reasoning_effort(model):

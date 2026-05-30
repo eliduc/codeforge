@@ -118,7 +118,7 @@ import type { SessionResponse, AgentConfigResponse, FinalResultResponse, Executi
 import type { EnhancementSuggestion, CuratedSuggestion, EnhancerAgentConfig, EnhancerSummarizerConfig, EnhanceRequest, AttachmentInfo } from '../types'
 import { useProvidersStore } from '../stores/providersStore'
 // КАО#VR-58 — pure thinking-effort logic extracted for unit-testability
-import { THINKING_EFFORT_OPTIONS, inferThinkingEfforts } from '../lib/thinkingEfforts'
+import { deriveThinkingControls, isAlwaysReasoning } from '../lib/thinkingEfforts'
 import SpecificationsDialog from '../components/common/SpecificationsDialog'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import {
@@ -909,30 +909,16 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
   const currentProvider = providers.find(p => p.name === provider)
   const modelsForProvider = currentProvider?.models || []
 
-  // VR-58 — Per-model thinking configuration.
-  // Source of truth = backend model_capabilities. `modelCaps === undefined`
-  // means the registry has no entry for this model (NOT "no thinking"): only
-  // in that gap do we fall back to a family heuristic so the controls aren't
-  // wrongly locked. An explicit [] from the backend is respected as "this
-  // model has no thinking mode".
+  // VR-58 / КАО#VR-58 — Per-model thinking config, derived in one place
+  // (lib/thinkingEfforts.deriveThinkingControls) so the component and its unit
+  // tests share a single implementation. Source of truth = backend
+  // model_capabilities; a family heuristic fills in only when caps are entirely
+  // absent; an explicit [] is respected as "no thinking mode".
   const modelCaps = currentProvider?.model_capabilities?.[model]
-  const capsEfforts: string[] = modelCaps?.thinking_effort_options || []
-  const effectiveEfforts = capsEfforts.length > 0
-    ? capsEfforts
-    : (modelCaps === undefined ? inferThinkingEfforts(provider, model) : [])
-  const supportsThinking = effectiveEfforts.length > 0
-  // Ordered level options this model actually supports (no "Off"/Auto here —
-  // the Off state lives in the separate mode control).
-  const levelOptions = THINKING_EFFORT_OPTIONS.filter(o => o.value && effectiveEfforts.includes(o.value))
-  // Sensible default level when the user switches thinking ON: prefer "high"
-  // for best code quality, else the strongest level the model supports.
-  const defaultEffort = effectiveEfforts.includes('high')
-    ? 'high'
-    : (levelOptions.length > 0 ? levelOptions[levelOptions.length - 1].value : 'medium')
-  // Per-model output-token ceiling — also a model property surfaced to the user.
-  const modelMaxTokens = typeof modelCaps?.max_output_tokens === 'number'
-    ? modelCaps.max_output_tokens
-    : 128000
+  const { supportsThinking, levelOptions, defaultEffort, modelMaxTokens } =
+    deriveThinkingControls(provider, model, modelCaps)
+  // КАО#VR-58 — o-series / GPT-5+ always reason; their "off" is really "Auto".
+  const alwaysReasoning = isAlwaysReasoning(provider, model)
 
   // Auto-reposition if popup overflows the container (run once on mount)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -1061,7 +1047,7 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
                 onChange={e => setThinkingEffort(e.target.value === 'on' ? defaultEffort : '')}
                 className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <option value="off">Off</option>
+                <option value="off">{alwaysReasoning ? 'Auto' : 'Off'}</option>
                 <option value="on">On</option>
               </select>
               <select
@@ -1083,6 +1069,12 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
             {!supportsThinking && (
               <div className="mt-1 text-[10px] text-gray-500 leading-tight">
                 This model has no separate thinking/reasoning mode.
+              </div>
+            )}
+            {/* КАО#VR-58 — clarify the "Auto" position for always-reasoning models. */}
+            {alwaysReasoning && supportsThinking && !thinkingEffort && (
+              <div className="mt-1 text-[10px] text-gray-500 leading-tight">
+                {model} always reasons — Auto uses its default effort; pick a level to pin it.
               </div>
             )}
             {/* КАО#VR-58 — gate on Anthropic: only Anthropic restricts "max" to

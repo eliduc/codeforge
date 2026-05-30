@@ -8,7 +8,12 @@
 // an unknown model is allowed.
 
 import { describe, expect, it } from 'vitest'
-import { THINKING_EFFORT_OPTIONS, inferThinkingEfforts } from './thinkingEfforts'
+import {
+  THINKING_EFFORT_OPTIONS,
+  inferThinkingEfforts,
+  isAlwaysReasoning,
+  deriveThinkingControls,
+} from './thinkingEfforts'
 
 describe('THINKING_EFFORT_OPTIONS', () => {
   it('has the exact ordered set of values (Auto + 5 levels)', () => {
@@ -271,6 +276,60 @@ describe('AgentConfigPopup mapping derivations (pure mirror)', () => {
       const opts = levelOptionsFor(efforts).map(o => o.value)
       expect(opts.length).toBeGreaterThan(0)
       expect(opts).toContain(defaultEffortFor(efforts))
+    }
+  })
+})
+
+// КАО#VR-58 — isAlwaysReasoning: o-series / GPT-5+ always reason (no true "off").
+describe('isAlwaysReasoning', () => {
+  it('is true for OpenAI o-series and GPT-5+ chat models', () => {
+    expect(isAlwaysReasoning('openai', 'o3')).toBe(true)
+    expect(isAlwaysReasoning('openai', 'o4-mini')).toBe(true)
+    expect(isAlwaysReasoning('openai', 'gpt-5')).toBe(true)
+    expect(isAlwaysReasoning('openai', 'gpt-5.5')).toBe(true)
+    expect(isAlwaysReasoning('OpenAI', 'GPT-6')).toBe(true) // case-insensitive
+  })
+  it('is false for older OpenAI and other providers (thinking is optional there)', () => {
+    expect(isAlwaysReasoning('openai', 'gpt-4o')).toBe(false)
+    expect(isAlwaysReasoning('anthropic', 'claude-opus-4-8')).toBe(false)
+    expect(isAlwaysReasoning('google', 'gemini-3-pro')).toBe(false)
+    expect(isAlwaysReasoning('grok', 'grok-4')).toBe(false)
+    expect(isAlwaysReasoning('', '')).toBe(false)
+  })
+})
+
+// КАО#VR-58 — deriveThinkingControls: the single source of truth the popup uses.
+describe('deriveThinkingControls', () => {
+  it('uses backend caps when present (ignores the heuristic)', () => {
+    const c = deriveThinkingControls('openai', 'gpt-5.5', {
+      thinking_effort_options: ['minimal', 'low', 'medium', 'high'],
+      max_output_tokens: 32768,
+    })
+    expect(c.supportsThinking).toBe(true)
+    expect(c.levelOptions.map(o => o.value)).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(c.defaultEffort).toBe('high')
+    expect(c.modelMaxTokens).toBe(32768)
+  })
+
+  it('respects an explicit empty caps list as "no thinking" (no heuristic fallback)', () => {
+    const c = deriveThinkingControls('openai', 'gpt-5.4-pro', { thinking_effort_options: [], max_output_tokens: 32768 })
+    expect(c.supportsThinking).toBe(false)
+    expect(c.levelOptions).toEqual([])
+    expect(c.modelMaxTokens).toBe(32768)
+  })
+
+  it('falls back to the family heuristic ONLY when caps are entirely absent', () => {
+    const c = deriveThinkingControls('anthropic', 'claude-opus-4-9', undefined)
+    expect(c.supportsThinking).toBe(true)
+    expect(c.levelOptions.map(o => o.value)).toEqual(['low', 'medium', 'high', 'max'])
+    expect(c.defaultEffort).toBe('high')
+    expect(c.modelMaxTokens).toBe(128000) // fallback ceiling
+  })
+
+  it('defaultEffort is always within levelOptions (no out-of-range <select> value)', () => {
+    for (const caps of [['minimal', 'low'], ['low', 'medium'], ['minimal']]) {
+      const c = deriveThinkingControls('openai', 'x', { thinking_effort_options: caps })
+      expect(c.levelOptions.map(o => o.value)).toContain(c.defaultEffort)
     }
   })
 })

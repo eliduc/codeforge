@@ -155,13 +155,13 @@ def test_openai_caps_legacy_and_unknown_empty(model):
 
 
 def test_openai_caps_oseries_pro_distinction():
-    """o3-pro: _is_reasoning_model wins (starts with 'o'), so it gets the
-    o-series low/medium/high set rather than [] — documents the precedence in
-    get_model_capabilities (reasoning check runs before the pro/responses check).
-    See findings: o-series '-pro' does NOT route through _supports_responses_api.
+    """КАО#VR-32 (was a MINOR finding, now FIXED): o3-pro routes through the
+    Responses API (like gpt-*-pro), which this client does not pass
+    reasoning_effort to — so it advertises NO effort options. The responses-api
+    check now runs BEFORE the o-series reasoning check in get_model_capabilities.
     """
     caps = _openai().get_model_capabilities("o3-pro")
-    assert caps["thinking_effort_options"] == _OSERIES_EFFORT
+    assert caps["thinking_effort_options"] == []
 
 
 def test_openai_caps_include_max_output_tokens():
@@ -325,7 +325,9 @@ def test_openai_supports_responses_api_only_pro_suffix():
     # Must anchor on the '-pro' SUFFIX, not 'pro' anywhere.
     assert _supports_responses_api("gpt-5-pro-preview") is False
     assert _supports_responses_api("gpt-5") is False
-    assert _supports_responses_api("o3-pro") is False  # o-series not gpt-\d-pro
+    # КАО#VR-32 — o-series '-pro' now routes via the Responses API too.
+    assert _supports_responses_api("o3-pro") is True
+    assert _supports_responses_api("o4-pro") is True
 
 
 # ===========================================================================
