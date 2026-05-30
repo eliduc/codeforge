@@ -150,9 +150,15 @@ class OpenAIProvider(BaseLLMProvider):
         """Return per-model reasoning effort options for OpenAI."""
         caps: dict = {"max_output_tokens": self.get_max_output_tokens(model)}
         if self._is_reasoning_model(model):
+            # o-series pure-reasoning models (o1/o3/o4…): low/medium/high.
             caps["thinking_effort_options"] = ["low", "medium", "high"]
         elif self._supports_reasoning_effort(model):
-            caps["thinking_effort_options"] = ["low", "medium"]
+            # VR-59 — GPT-5+ chat models expose OpenAI's full reasoning_effort
+            # set, which adds "minimal" below "low". Previously capped at
+            # [low, medium], which under-reported the model's real capability
+            # (generate() already passes any effort value straight through, so
+            # "high"/"minimal" worked — only this metadata hid them in the UI).
+            caps["thinking_effort_options"] = ["minimal", "low", "medium", "high"]
         else:
             caps["thinking_effort_options"] = []
         return caps

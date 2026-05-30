@@ -159,6 +159,35 @@ def test_openai_no_hardcoded_responses_api_list():
     assert not hasattr(OpenAIProvider, "REASONING_EFFORT_MODELS")
 
 
+def test_get_model_capabilities_gpt5x_full_effort_set():
+    """VR-59 — GPT-5+ chat models expose minimal/low/medium/high."""
+    from app.llm.providers.openai_provider import OpenAIProvider
+    p = OpenAIProvider(api_key="fake")
+    assert p.get_model_capabilities("gpt-5.5")["thinking_effort_options"] == [
+        "minimal", "low", "medium", "high",
+    ]
+    # mini/nano chat variants too
+    assert p.get_model_capabilities("gpt-5-mini")["thinking_effort_options"] == [
+        "minimal", "low", "medium", "high",
+    ]
+
+
+def test_get_model_capabilities_oseries_no_minimal():
+    """o-series pure-reasoning models: low/medium/high (no 'minimal')."""
+    from app.llm.providers.openai_provider import OpenAIProvider
+    p = OpenAIProvider(api_key="fake")
+    caps = p.get_model_capabilities("o3")
+    assert caps["thinking_effort_options"] == ["low", "medium", "high"]
+    assert "minimal" not in caps["thinking_effort_options"]
+
+
+def test_get_model_capabilities_gpt5_pro_no_effort():
+    """Pro variants use the Responses API path → no reasoning_effort options."""
+    from app.llm.providers.openai_provider import OpenAIProvider
+    p = OpenAIProvider(api_key="fake")
+    assert p.get_model_capabilities("gpt-5.4-pro")["thinking_effort_options"] == []
+
+
 # ===========================================================================
 # Grok — _parse_grok_model + predicates
 # ===========================================================================

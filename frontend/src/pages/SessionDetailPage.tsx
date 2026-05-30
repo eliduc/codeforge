@@ -865,6 +865,7 @@ const agentPopupMeta: Record<string, { icon: React.ElementType; label: string; g
 // Floating config popup for agent nodes (provider/model selector)
 const THINKING_EFFORT_OPTIONS = [
   { value: '', label: 'Auto' },
+  { value: 'minimal', label: 'Minimal' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
@@ -898,8 +899,10 @@ function inferThinkingEfforts(provider: string, model: string): string[] {
     return []
   }
   if (p === 'openai') {
-    // o-series and GPT-5 reasoning models accept an effort level.
-    if (/^o\d/.test(m) || /gpt-5/.test(m)) return ['low', 'medium', 'high']
+    // o-series pure-reasoning models: low/medium/high.
+    if (/^o\d/.test(m)) return ['low', 'medium', 'high']
+    // GPT-5+ chat models add "minimal" below "low".
+    if (/gpt-[5-9]/.test(m)) return ['minimal', 'low', 'medium', 'high']
     return []
   }
   if (p === 'grok') {
