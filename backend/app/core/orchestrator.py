@@ -3464,28 +3464,35 @@ class WorkflowOrchestrator:
         ACTUAL model used (after any router substitution), not the requested one,
         so the audit trail truly reflects what each call hit.
         """
+        # КАО#VR-56-FIX — do NOT acquire self._db_lock here. Every caller
+        # (coder/tester/summarizer/finalizer result handlers at orchestrator.py
+        # ~1862/2424/2626/3166) ALREADY holds it, and asyncio.Lock is
+        # non-reentrant — re-acquiring it dead-locked the orchestrator right
+        # after the coding phase (the first handler to reach the save block hung
+        # forever holding the lock, freezing every session). The caller's lock
+        # already serialises the shared AsyncSession, so VR-56's "persist every
+        # request" intent is preserved without the second acquisition.
         raw = result.raw_response or {}
         actual_model = raw.get("model_used") or model
         try:
-            async with self._db_lock:
-                request = LLMRequest(
-                    session_id=self.session.id,
-                    agent_type=agent_type,
-                    agent_index=agent_index,
-                    iteration=self.state.current_iteration,
-                    prompt_sent="[see agent]",  # TODO: store full prompt
-                    response_received=result.content[:10000] if result.content else "",
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    cost_usd=result.cost_usd,
-                    latency_ms=result.latency_ms,
-                    llm_provider=provider,
-                    llm_model=actual_model,
-                    success=result.success,
-                    error_message=result.error,
-                )
-                self.db.add(request)
-                await self.db.commit()
+            request = LLMRequest(
+                session_id=self.session.id,
+                agent_type=agent_type,
+                agent_index=agent_index,
+                iteration=self.state.current_iteration,
+                prompt_sent="[see agent]",  # TODO: store full prompt
+                response_received=result.content[:10000] if result.content else "",
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_usd=result.cost_usd,
+                latency_ms=result.latency_ms,
+                llm_provider=provider,
+                llm_model=actual_model,
+                success=result.success,
+                error_message=result.error,
+            )
+            self.db.add(request)
+            await self.db.commit()
         except Exception as e:
             logger.error(f"Failed to save LLM request for {agent_type} {agent_index}: {e}")
             try:
