@@ -629,8 +629,17 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
       continueChapter()
       return
     }
+    // DEMO-REPLAY-FIX: ▶ Play after the demo has finished should replay from the
+    // start (reset every node back to idle) instead of being a no-op that leaves
+    // all nodes lit in their finished/done state. The clock is already at
+    // duration_seconds, so a bare setPlaying(true) re-finishes on the next tick.
+    if (finished) {
+      seekTo(0)
+      setPlaying(true)
+      return
+    }
     setPlaying(true)
-  }, [pausedForChapter, continueChapter])
+  }, [pausedForChapter, continueChapter, finished, seekTo])
 
   return {
     state,
