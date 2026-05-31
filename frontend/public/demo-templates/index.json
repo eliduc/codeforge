@@ -18,7 +18,7 @@
   {
     "id": "attractor",
     "name": "Quaternion Julia Attractor",
-    "description": "A ray-marched 3D quaternion Julia strange attractor (z → z² + c). Short multi-agent replay where the Testers catch a resolution-scaling bug and the Coder fixes it — ending in the interactive emerald attractor.",
+    "description": "A ray-marched 3D quaternion Julia strange attractor (z → z² + c). Short multi-agent replay where the Testers catch a resolution-scaling bug and the Coder fixes it — ending in the interactive attractor.",
     "language": "javascript_browser",
     "thumbnail": "🌀",
     "duration_seconds": 88

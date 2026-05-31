@@ -144,7 +144,7 @@ function DemoCard({
               : item.id === 'murmuration'
               ? 'radial-gradient(circle at 50% 32%, #7c2d52 0%, #3b1d4e 55%, #0a0612 100%)'
               : item.id === 'attractor'
-              ? 'radial-gradient(circle at 50% 40%, #064e3b 0%, #052e2b 55%, #02110f 100%)'
+              ? 'radial-gradient(circle at 50% 38%, #4a1d52 0%, #2a1133 55%, #0a0612 100%)'
               : item.id === 'life'
               ? 'radial-gradient(circle at center, #0c4a6e 0%, #082f49 55%, #04060c 100%)'
               : item.id === 'particles'
@@ -268,16 +268,16 @@ function DemoThumbnail({ id, fallback }: { id: string; fallback?: string }) {
       arcs.push({ r: 14 + i * 6.4, rot: i * 22, op: (0.9 - i * 0.06).toFixed(2), w: +(2.3 - i * 0.12).toFixed(2) })
     }
     return (
-      <svg viewBox="0 0 200 150" className={cls} style={{ filter: 'drop-shadow(0 0 9px rgba(16,185,129,0.5))' }} aria-hidden="true">
+      <svg viewBox="0 0 200 150" className={cls} style={{ filter: 'drop-shadow(0 0 9px rgba(192,38,211,0.5))' }} aria-hidden="true">
         <defs>
           <radialGradient id="qa-halo" cx="50%" cy="48%" r="60%">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+            <stop offset="0%" stopColor="#c026d3" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="#c026d3" stopOpacity="0" />
           </radialGradient>
           <linearGradient id="qa-arc" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#a7f3d0" />
-            <stop offset="60%" stopColor="#10b981" />
-            <stop offset="100%" stopColor="#065f46" />
+            <stop offset="0%" stopColor="#f5d0fe" />
+            <stop offset="55%" stopColor="#c026d3" />
+            <stop offset="100%" stopColor="#7e22ce" />
           </linearGradient>
         </defs>
         <ellipse cx="100" cy="74" rx="92" ry="64" fill="url(#qa-halo)" />
