@@ -32,17 +32,19 @@ import { test, expect, type Page } from '@playwright/test'
 
 // Per-template metadata used by the multi-template loop.
 interface TemplateInfo {
-  id: 'mandelbulb' | 'crystal' | 'particles' | 'snake'
+  id: 'mandelbulb' | 'murmuration' | 'life' | 'particles'
   name: RegExp
   durationSeconds: number
   hasNarrationChapters: boolean
 }
 
+// MURMUR-DEMO — refreshed to the current 4-demo gallery (crystal/snake were
+// removed in VR-48/50/51; "life" + "murmuration" added).
 const TEMPLATES: TemplateInfo[] = [
-  { id: 'mandelbulb', name: /Mandelbulb/i, durationSeconds: 162, hasNarrationChapters: true },
-  { id: 'crystal',    name: /Crystal/i,    durationSeconds: 90,  hasNarrationChapters: false },
-  { id: 'particles',  name: /Particles/i,  durationSeconds: 90,  hasNarrationChapters: false },
-  { id: 'snake',      name: /Snake/i,      durationSeconds: 90,  hasNarrationChapters: false },
+  { id: 'mandelbulb',  name: /Mandelbulb/i,  durationSeconds: 162, hasNarrationChapters: true },
+  { id: 'murmuration', name: /Murmuration/i, durationSeconds: 162, hasNarrationChapters: true },
+  { id: 'life',        name: /Life/i,        durationSeconds: 127, hasNarrationChapters: true },
+  { id: 'particles',   name: /Particles/i,   durationSeconds: 90,  hasNarrationChapters: false },
 ]
 
 // All tests default to anonymous: clear any prior auth state.
@@ -133,7 +135,9 @@ test.describe('Wave-4 Demo — Multi-template coverage', () => {
     // clock≈0 / workflow=idle, or a phase-specific body once playback starts.
     // We assert NO chapter-style "Continue" button is present (since there's
     // no chapter pause), and the React Flow graph still renders.
-    for (const id of ['crystal', 'particles', 'snake'] as const) {
+    // MURMUR-DEMO — particles is now the only demo without narration_chapters
+    // (mandelbulb / murmuration / life all have chapters).
+    for (const id of ['particles'] as const) {
       await page.goto(`/demo/${id}`)
       await waitForGraph(page)
       // No chapter Continue (StatusPlaque only auto-narrates, no pause CTA).
@@ -165,7 +169,7 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
     // Featured Demos gallery rendered.
     await expect(page.getByText(/Featured Demos/i).first()).toBeVisible()
     // All 4 cards rendered via "Watch demo" links.
-    for (const id of ['mandelbulb', 'crystal', 'particles', 'snake']) {
+    for (const id of ['mandelbulb', 'murmuration', 'life', 'particles']) {
       await expect(page.locator(`a[href="/demo/${id}"]`).first())
         .toBeVisible({ timeout: 10_000 })
     }
@@ -175,7 +179,7 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true }))
       .toBeVisible({ timeout: 15_000 })
-    for (const id of ['mandelbulb', 'crystal', 'particles', 'snake']) {
+    for (const id of ['mandelbulb', 'murmuration', 'life', 'particles']) {
       await expect(page.locator(`a[href="/demo/${id}"]`).first())
         .toBeVisible({ timeout: 10_000 })
     }

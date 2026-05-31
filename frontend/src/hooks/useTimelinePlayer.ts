@@ -108,6 +108,8 @@ export interface DemoTimeline {
   language: string
   spec: string
   duration_seconds: number
+  /** Initial playback-speed multiplier (default 1×). Long demos default to 4×. */
+  default_speed?: number
   coders: { model: string }[]
   testers: { model: string }[]
   summarizer?: { model: string }
@@ -215,7 +217,7 @@ interface UseTimelinePlayerOpts {
 export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlayerOpts) {
   const [clock, setClock] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed] = useState(1)
+  const [speed, setSpeed] = useState(timeline?.default_speed ?? 1)
   const [finished, setFinished] = useState(false)
   const [workflow, setWorkflow] = useState<DemoWorkflowState>(INITIAL_WORKFLOW)
   const [agents, setAgents] = useState<Record<string, DemoAgentState>>(() =>
@@ -253,6 +255,8 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
     nextEventIdxRef.current = 0
     clockRef.current = 0
     setClock(0)
+    // MURMUR-DEMO — long demos (mandelbulb / murmuration / life) start at 4× via default_speed.
+    setSpeed(timeline?.default_speed ?? 1)
     setWorkflow(INITIAL_WORKFLOW)
     setAgents(buildInitialAgents(timeline))
     setFinished(false)

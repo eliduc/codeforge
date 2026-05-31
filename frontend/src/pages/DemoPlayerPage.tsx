@@ -44,6 +44,7 @@ import {
   ChevronUp,
   ChevronDown,
   Zap,
+  ExternalLink,
 } from 'lucide-react'
 import notify from '../components/common/StyledToast'
 import ConfirmDialog from '../components/common/ConfirmDialog'
@@ -65,6 +66,27 @@ import { useAuthStore } from '../stores/authStore'
 
 // Улучшатели#4 P1·S — speed presets aligned with DemosPage "60× speed" promise.
 const SPEEDS = [0.5, 1, 2, 4, 8, 16, 60]
+
+/** MURMUR-DEMO — open self-contained HTML in a new browser tab: a real page
+ *  load (blob URL) so CDN scripts run and the app gets the full viewport.
+ *  Mirrors SessionDetailPage's "Open in new tab" so the demo's final result
+ *  opens in a full separate window exactly like a real session's. */
+function openHtmlInNewWindow(code: string) {
+  // Strip CSP meta tags so CDN scripts (e.g. three.js) load in the new tab.
+  const html = code.replace(
+    /<meta\s+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>/gi,
+    '<!-- CSP meta removed by CodeForge -->',
+  )
+  const blob = new Blob([html], { type: 'text/html' })
+  const url = URL.createObjectURL(blob)
+  const win = window.open(url, '_blank')
+  if (!win) {
+    URL.revokeObjectURL(url)
+    notify.error('Popup blocked — please allow popups for this site')
+    return
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+}
 
 /** Derive a human-friendly status sentence from current player state.
  *  Used by <StatusPlaque /> to narrate what's happening without requiring
@@ -1099,12 +1121,24 @@ function FinalIframe({
   // CodePreviewModal below DOES include allow-pointer-lock because future
   // demos may opt in for a fullscreen-style experience.
   return (
-    <iframe
-      title="Demo final result"
-      srcDoc={code}
-      sandbox="allow-scripts"
-      className="absolute inset-0 w-full h-full border-0 bg-black"
-    />
+    <>
+      <iframe
+        title="Demo final result"
+        srcDoc={code}
+        sandbox="allow-scripts"
+        className="absolute inset-0 w-full h-full border-0 bg-black"
+      />
+      {/* MURMUR-DEMO — open the final app in a full separate window (real page
+          load via blob URL), exactly like a real session's "Open in new tab". */}
+      <button
+        type="button"
+        onClick={() => openHtmlInNewWindow(code)}
+        className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-900/85 hover:bg-gray-800 border border-gray-600 text-white text-xs font-semibold rounded-md shadow-lg backdrop-blur-sm transition-colors"
+        title="Open the final app in a new browser window (full size)"
+      >
+        <ExternalLink className="w-3.5 h-3.5" /> Open in full window
+      </button>
+    </>
   )
 }
 
@@ -1229,6 +1263,14 @@ function CodePreviewModal({
           <div className="text-sm font-semibold text-white flex-1 truncate">
             {mode === 'simplified' ? 'Iteration-1 preview — basic version' : 'Final enhanced version'}
           </div>
+          {/* MURMUR-DEMO — open the running app in a full separate window. */}
+          <button
+            onClick={() => openHtmlInNewWindow(code)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-semibold rounded-md transition-colors"
+            title="Open in a new browser window (full size)"
+          >
+            <ExternalLink className="w-3.5 h-3.5" /> Full window
+          </button>
           <span className="text-[11px] text-gray-400">ESC to close</span>
           <button
             onClick={onClose}

@@ -8,6 +8,14 @@
     "duration_seconds": 90
   },
   {
+    "id": "murmuration",
+    "name": "3D Starling Murmuration",
+    "description": "A real-time 3D flock of starlings from three local rules (separation, alignment, cohesion). Full multi-agent replay — coders, testers, finalizer — then the Enhancement loop adds topological neighbours, a predator, and density-wave shimmer.",
+    "language": "javascript_browser",
+    "thumbnail": "🐦",
+    "duration_seconds": 162
+  },
+  {
     "id": "life",
     "name": "Conway's Game of Life",
     "description": "Conway's Game of Life with a dynamically growing grid (no edge effects), step + auto playback, and jump-to-generation — plus Game of Life as a Turing machine (logic gates) and Game of Life playing Game of Life.",

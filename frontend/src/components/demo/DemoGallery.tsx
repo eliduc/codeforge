@@ -141,6 +141,8 @@ function DemoCard({
           background:
             item.id === 'mandelbulb'
               ? 'radial-gradient(circle at 30% 40%, #5b21b6 0%, #1e1b4b 60%, #0a0918 100%)'
+              : item.id === 'murmuration'
+              ? 'radial-gradient(circle at 50% 32%, #7c2d52 0%, #3b1d4e 55%, #0a0612 100%)'
               : item.id === 'life'
               ? 'radial-gradient(circle at center, #0c4a6e 0%, #082f49 55%, #04060c 100%)'
               : item.id === 'particles'
@@ -212,6 +214,47 @@ function DemoThumbnail({ id, fallback }: { id: string; fallback?: string }) {
         {sats.map(([cx, cy], i) => <circle key={`s${i}`} cx={cx} cy={cy} r="17" fill="url(#mb-bulb)" />)}
         <circle cx="100" cy="72" r="36" fill="url(#mb-bulb)" />
         <ellipse cx="88" cy="60" rx="9" ry="6" fill="#fdf4ff" opacity="0.7" />
+      </svg>
+    )
+  }
+
+  if (id === 'murmuration') {
+    // 3D starling murmuration → a swirling flock of tiny birds (deterministic
+    // swirl, sunset palette) that reads as a shape-shifting cloud.
+    const birds: [number, number, number, number][] = []
+    const N = 46
+    for (let i = 0; i < N; i++) {
+      const t = i / N
+      const ang = t * Math.PI * 3.2
+      const rad = 16 + 46 * Math.sin(t * Math.PI) // 0 → peak → 0 (teardrop)
+      const x = 104 + Math.cos(ang) * rad * 0.95 + (t - 0.5) * 34
+      const y = 74 + Math.sin(ang) * rad * 0.6 - (t - 0.5) * 12
+      const s = 0.7 + 0.6 * Math.sin(t * Math.PI)
+      birds.push([x, y, ((ang + Math.PI / 2) * 180) / Math.PI, s])
+    }
+    return (
+      <svg viewBox="0 0 200 150" className={cls} style={{ filter: 'drop-shadow(0 0 8px rgba(232,121,185,0.45))' }} aria-hidden="true">
+        <defs>
+          <linearGradient id="mm-bird" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#fbcfe8" />
+            <stop offset="55%" stopColor="#e879b9" />
+            <stop offset="100%" stopColor="#a855f7" />
+          </linearGradient>
+          <radialGradient id="mm-halo" cx="52%" cy="46%" r="58%">
+            <stop offset="0%" stopColor="#e879b9" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#e879b9" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <ellipse cx="104" cy="72" rx="88" ry="60" fill="url(#mm-halo)" />
+        {birds.map(([x, y, a, s], i) => (
+          <path
+            key={i}
+            d="M5 0 L-3 2.4 L-3 -2.4 Z"
+            fill="url(#mm-bird)"
+            opacity={(0.45 + 0.5 * s).toFixed(2)}
+            transform={`translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${a.toFixed(0)}) scale(${s.toFixed(2)})`}
+          />
+        ))}
       </svg>
     )
   }

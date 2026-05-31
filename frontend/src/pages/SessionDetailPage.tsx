@@ -4878,7 +4878,7 @@ export default function SessionDetailPage() {
               </div>
               <div className="flex items-center gap-3 mt-0.5">
                 <span className="text-sm text-gray-400">
-                  Iteration {Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1} / {session.max_iterations}
+                  Iteration {Math.min(Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1, session.max_iterations ?? 5) /* ITER-FIX: clamp transient over-cap iteration */} / {session.max_iterations}
                 </span>
                 <span className="text-sm text-gray-500">
                   • {coders.length} coders • {testers.length} testers
@@ -5282,7 +5282,7 @@ export default function SessionDetailPage() {
             />
           </div>
           <span className="text-xs text-cf-text-muted whitespace-nowrap">
-            Iter {Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1}/{session.max_iterations || 5} &bull; {workflowState.phase}
+            Iter {Math.min(Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1, session.max_iterations || 5) /* ITER-FIX: clamp transient over-cap iteration */}/{session.max_iterations || 5} &bull; {workflowState.phase}
           </span>
         </div>
       )}
@@ -5418,7 +5418,7 @@ export default function SessionDetailPage() {
                   <span className={`text-sm font-medium ${session.status === 'enhancing' ? 'text-purple-400' : 'text-blue-400'}`}>
                     {session.status === 'enhancing'
                       ? 'Enhancement phase'
-                      : `${humanizePhase(workflowState.phase, Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0))} phase`}
+                      : `${humanizePhase(workflowState.phase, Math.min(Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0), session.max_iterations ?? 5) /* ITER-FIX: clamp transient over-cap iteration */)} phase`}
                   </span>
                 </div>
               </Panel>

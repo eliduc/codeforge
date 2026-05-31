@@ -210,15 +210,14 @@ test.describe('Wave-4 Anonymous — PublicChrome rendering', () => {
 // ─── Demo gallery /demos (anonymous) ─────────────────────────────────────────
 
 test.describe('Wave-4 Anonymous — /demos gallery', () => {
-  // КАО#VR-58 — updated for the current 3-demo gallery (VR-48/50/51 removed
-  // "Neon Snake" + "WebGL Glass Crystal", added "Conway's Game of Life").
-  test('C1. Renders all 3 demo cards (mandelbulb, life, particles)', async ({ page }) => {
+  // MURMUR-DEMO — gallery now has 4 demos (added "3D Starling Murmuration").
+  test('C1. Renders all 4 demo cards (mandelbulb, murmuration, life, particles)', async ({ page }) => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true })).toBeVisible({ timeout: 15_000 })
 
     // Each card has a "Watch demo" link pointing to /demo/<id>. We assert one
     // exists per demo id by checking the href.
-    for (const id of ['mandelbulb', 'life', 'particles']) {
+    for (const id of ['mandelbulb', 'murmuration', 'life', 'particles']) {
       const link = page.locator(`a[href="/demo/${id}"]`).first()
       await expect(link, `Watch demo link for ${id}`).toBeVisible({ timeout: 15_000 })
     }
@@ -241,8 +240,9 @@ test.describe('Wave-4 Anonymous — /demos gallery', () => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true })).toBeVisible({ timeout: 15_000 })
 
-    // КАО#VR-58 — current 3-demo gallery (thumbnails are SVG illustrations now).
+    // MURMUR-DEMO — current 4-demo gallery (thumbnails are SVG illustrations now).
     await expect(page.getByText(/Mandelbulb 3D Attractor/i).first()).toBeVisible()
+    await expect(page.getByText(/3D Starling Murmuration/i).first()).toBeVisible()
     await expect(page.getByText(/Game of Life/i).first()).toBeVisible()
     await expect(page.getByText(/Flow-Field Particles/i).first()).toBeVisible()
   })
