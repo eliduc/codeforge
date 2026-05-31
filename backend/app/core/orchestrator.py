@@ -3309,6 +3309,21 @@ class WorkflowOrchestrator:
         """Save summary audit to database."""
         async with self._db_lock:
             try:
+                # КАО#VR-21-follow — proactively drop any existing summary for this
+                # (session, coder, iteration) before inserting. Reset already
+                # clears summary_audits, but a run STARTED on a session with
+                # leftover rows from an incomplete prior run (only iteration-1 rows
+                # were seen colliding) would otherwise hit uq_summary_audit and the
+                # old behaviour SKIPPED — leaving a STALE summary for the
+                # issue-check to read. Delete-then-insert overwrites cleanly.
+                from sqlalchemy import delete as _sa_delete
+                await self.db.execute(
+                    _sa_delete(SummaryAudit).where(
+                        SummaryAudit.session_id == self.session.id,
+                        SummaryAudit.coder_index == coder_index,
+                        SummaryAudit.iteration == self.state.current_iteration,
+                    )
+                )
                 summary = SummaryAudit(
                     session_id=self.session.id,
                     coder_index=coder_index,
