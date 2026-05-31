@@ -16,6 +16,14 @@
     "duration_seconds": 162
   },
   {
+    "id": "attractor",
+    "name": "Quaternion Julia Attractor",
+    "description": "A ray-marched 3D quaternion Julia strange attractor (z → z² + c). Short multi-agent replay where the Testers catch a resolution-scaling bug and the Coder fixes it — ending in the interactive emerald attractor.",
+    "language": "javascript_browser",
+    "thumbnail": "🌀",
+    "duration_seconds": 88
+  },
+  {
     "id": "life",
     "name": "Conway's Game of Life",
     "description": "Conway's Game of Life with a dynamically growing grid (no edge effects), step + auto playback, and jump-to-generation — plus Game of Life as a Turing machine (logic gates) and Game of Life playing Game of Life.",

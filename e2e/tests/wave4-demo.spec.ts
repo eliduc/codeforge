@@ -32,17 +32,18 @@ import { test, expect, type Page } from '@playwright/test'
 
 // Per-template metadata used by the multi-template loop.
 interface TemplateInfo {
-  id: 'mandelbulb' | 'murmuration' | 'life' | 'particles'
+  id: 'mandelbulb' | 'murmuration' | 'attractor' | 'life' | 'particles'
   name: RegExp
   durationSeconds: number
   hasNarrationChapters: boolean
 }
 
-// MURMUR-DEMO — refreshed to the current 4-demo gallery (crystal/snake were
-// removed in VR-48/50/51; "life" + "murmuration" added).
+// MURMUR-DEMO / ATTRACTOR-DEMO — current 5-demo gallery (crystal/snake were
+// removed in VR-48/50/51; "life", "murmuration" and "attractor" added).
 const TEMPLATES: TemplateInfo[] = [
   { id: 'mandelbulb',  name: /Mandelbulb/i,  durationSeconds: 162, hasNarrationChapters: true },
   { id: 'murmuration', name: /Murmuration/i, durationSeconds: 162, hasNarrationChapters: true },
+  { id: 'attractor',   name: /Julia/i,       durationSeconds: 88,  hasNarrationChapters: true },
   { id: 'life',        name: /Life/i,        durationSeconds: 127, hasNarrationChapters: true },
   { id: 'particles',   name: /Particles/i,   durationSeconds: 90,  hasNarrationChapters: false },
 ]
@@ -169,7 +170,7 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
     // Featured Demos gallery rendered.
     await expect(page.getByText(/Featured Demos/i).first()).toBeVisible()
     // All 4 cards rendered via "Watch demo" links.
-    for (const id of ['mandelbulb', 'murmuration', 'life', 'particles']) {
+    for (const id of ['mandelbulb', 'murmuration', 'attractor', 'life', 'particles']) {
       await expect(page.locator(`a[href="/demo/${id}"]`).first())
         .toBeVisible({ timeout: 10_000 })
     }
@@ -179,7 +180,7 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true }))
       .toBeVisible({ timeout: 15_000 })
-    for (const id of ['mandelbulb', 'murmuration', 'life', 'particles']) {
+    for (const id of ['mandelbulb', 'murmuration', 'attractor', 'life', 'particles']) {
       await expect(page.locator(`a[href="/demo/${id}"]`).first())
         .toBeVisible({ timeout: 10_000 })
     }
