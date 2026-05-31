@@ -38,6 +38,63 @@ logger = logging.getLogger(__name__)
 app_settings = get_settings()
 
 
+# VR-21 — hold strong refs to boot-time auto-resume tasks so the event loop
+# doesn't garbage-collect them mid-flight (create_task only keeps a weak ref).
+_boot_resume_tasks: set = set()
+
+
+async def _auto_resume_session(session_id) -> None:
+    """VR-21 — re-launch the orchestrator for a session orphaned by a backend
+    restart, instead of failing it.
+
+    Mirrors the ``/resume`` fallback in routes/sessions.py (used when the
+    orchestrator isn't registered after a restart): recreate the
+    WorkflowOrchestrator, register it, and run() — which picks up from the
+    persisted DB state. On ANY failure the session is marked FAILED so a bad
+    resume never leaves it as a perpetual zombie.
+    """
+    from app.db.database import AsyncSessionLocal
+    from app.db.models import Session as SessionModel, SessionStatus
+    from app.core.orchestrator import WorkflowOrchestrator
+    from app.api.websocket.manager import session_manager
+    from sqlalchemy import select, update
+    from sqlalchemy.orm import selectinload
+
+    sid = str(session_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                select(SessionModel)
+                .where(SessionModel.id == session_id)
+                .options(selectinload(SessionModel.agent_configs))
+            )
+            session_obj = (await db.execute(stmt)).scalar_one_or_none()
+            if session_obj is None:
+                return
+            orchestrator = WorkflowOrchestrator(
+                db=db,
+                session=session_obj,
+                event_callback=session_manager.broadcast,
+            )
+            await session_manager.register_orchestrator(sid, orchestrator)
+            try:
+                await orchestrator.run()
+            finally:
+                await session_manager.unregister_orchestrator(sid)
+    except Exception as e:
+        logger.error(f"VR-21 auto-resume failed for session {sid}: {e}")
+        try:
+            async with AsyncSessionLocal() as db2:
+                await db2.execute(
+                    update(SessionModel)
+                    .where(SessionModel.id == session_id)
+                    .values(status=SessionStatus.FAILED)
+                )
+                await db2.commit()
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -73,29 +130,63 @@ async def lifespan(app: FastAPI):
             "Configure SMTP_HOST + ALLOWED_EMAILS for email OTP, or set CODEFORGE_API_KEY for API key auth."
         )
 
-    # Reset zombie sessions (running/paused status left from a previous process)
+    # VR-21 — Auto-resume sessions interrupted by a backend restart instead of
+    # blanket-failing them. orchestrator.run() resumes from the persisted DB
+    # state (same path /resume uses when the orchestrator isn't registered after
+    # a restart). Guards:
+    #   * only RECENT sessions (updated within RESUME_WINDOW) are resurrected;
+    #     older RUNNING/ENHANCING zombies are failed (can't meaningfully resume);
+    #   * capped at RESUME_CAP so a backlog can't fire a thundering herd of LLM
+    #     calls on boot;
+    #   * PAUSED sessions are LEFT paused (the user paused them on purpose; they
+    #     resume via /resume) — no longer auto-failed;
+    #   * AWAITING_VISUAL_REVIEW is untouched (its auto-finalize timer is
+    #     re-armed by the visual_review startup hook).
     try:
+        import asyncio
         from app.db import AsyncSessionLocal
         from app.db.models import Session as SessionModel, SessionStatus, OTPCode
-        from sqlalchemy import update, delete
-        from datetime import datetime, timezone
+        from sqlalchemy import select, update, delete
+        from datetime import datetime, timezone, timedelta
+
+        RESUME_WINDOW = timedelta(hours=6)
+        RESUME_CAP = 5
+        cutoff = datetime.now(timezone.utc) - RESUME_WINDOW
+        active = [SessionStatus.RUNNING, SessionStatus.ENHANCING]
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
+            recent = await db.execute(
+                select(SessionModel.id)
+                .where(SessionModel.status.in_(active))
+                .where(SessionModel.updated_at >= cutoff)
+                .order_by(SessionModel.updated_at.desc())
+                .limit(RESUME_CAP)
+            )
+            resume_ids = list(recent.scalars().all())
+            # Older RUNNING/ENHANCING zombies (beyond the window) → FAILED.
+            stale = await db.execute(
                 update(SessionModel)
-                .where(SessionModel.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED, SessionStatus.ENHANCING]))
+                .where(SessionModel.status.in_(active))
+                .where(SessionModel.updated_at < cutoff)
                 .values(status=SessionStatus.FAILED)
                 .returning(SessionModel.id)
             )
-            zombie_ids = result.scalars().all()
+            stale_ids = list(stale.scalars().all())
             # Clean up expired OTP codes
             expired = await db.execute(
                 delete(OTPCode).where(OTPCode.expires_at < datetime.now(timezone.utc))
             )
             await db.commit()
-            if zombie_ids:
-                logger.warning(f"Reset {len(zombie_ids)} zombie sessions to FAILED: {zombie_ids}")
-            if expired.rowcount:
-                logger.info(f"Cleaned up {expired.rowcount} expired OTP codes")
+
+        for _sid in resume_ids:
+            _t = asyncio.create_task(_auto_resume_session(_sid))
+            _boot_resume_tasks.add(_t)
+            _t.add_done_callback(_boot_resume_tasks.discard)
+        if resume_ids:
+            logger.warning(f"VR-21 — auto-resuming {len(resume_ids)} interrupted sessions: {resume_ids}")
+        if stale_ids:
+            logger.warning(f"Reset {len(stale_ids)} stale zombie sessions to FAILED: {stale_ids}")
+        if expired.rowcount:
+            logger.info(f"Cleaned up {expired.rowcount} expired OTP codes")
     except Exception as e:
         logger.error(f"Failed startup cleanup (database may be unreachable): {e}")
 
