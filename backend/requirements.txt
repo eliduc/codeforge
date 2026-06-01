@@ -20,7 +20,9 @@ httpx>=0.28.1,<1
 pydantic~=2.9.0
 pydantic-settings~=2.5.0
 python-dotenv~=1.0.1
-python-jose[cryptography]~=3.3.0
+# КАО#R1-12 — bump off 3.3.0 (CVE-2024-33664 JWE-decompression DoS reachable
+# on any Bearer endpoint; CVE-2024-33663 algorithm confusion). Fixed in 3.4.0.
+python-jose[cryptography]>=3.4.0,<4
 passlib[bcrypt]~=1.7.4
 jinja2~=3.1.3
 

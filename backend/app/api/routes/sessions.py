@@ -1296,6 +1296,10 @@ async def list_sessions(
     # Build the search clause once so count + fetch stay in sync.
     search_clause = None
     if search:
+        # КАО#R1-13 — strip NUL bytes: PostgreSQL text columns reject \x00 and
+        # asyncpg raises a DataError that otherwise surfaces as a 500 on ?search=.
+        search = search.replace("\x00", "")
+    if search:
         like = f"%{search}%"
         search_clause = or_(
             Session.name.ilike(like),
@@ -2064,6 +2068,16 @@ async def cancel_session(
         raise HTTPException(
             status_code=400,
             detail="Cannot cancel completed or failed sessions"
+        )
+
+    # КАО#R1-14 — enhancement runs as a standalone background task (not the
+    # orchestrator), so cancel-signalling is a no-op for it and the old CAS then
+    # returned a confusing 409 *after* already signalling. Reject ENHANCING up
+    # front with a clear message; it finishes and moves to review on its own.
+    if session.status == SessionStatus.ENHANCING:
+        raise HTTPException(
+            status_code=409,
+            detail="Enhancement is in progress and cannot be cancelled; it will finish and move to review."
         )
 
     # Signal cancellation -- also wakes up a paused orchestrator

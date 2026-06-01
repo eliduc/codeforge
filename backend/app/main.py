@@ -154,14 +154,29 @@ async def lifespan(app: FastAPI):
         cutoff = datetime.now(timezone.utc) - RESUME_WINDOW
         active = [SessionStatus.RUNNING, SessionStatus.ENHANCING]
         async with AsyncSessionLocal() as db:
+            # КАО#R1-03 — only RUNNING sessions are orchestrator-resumable.
+            # ENHANCING is driven by a separate _run_enhancement task (NOT the
+            # orchestrator); resuming it via orchestrator.run() would re-run the
+            # whole coder→tester→finalizer pipeline and overwrite the existing
+            # FinalResult. So auto-resume RUNNING only…
             recent = await db.execute(
                 select(SessionModel.id)
-                .where(SessionModel.status.in_(active))
+                .where(SessionModel.status == SessionStatus.RUNNING)
                 .where(SessionModel.updated_at >= cutoff)
                 .order_by(SessionModel.updated_at.desc())
                 .limit(RESUME_CAP)
             )
             resume_ids = list(recent.scalars().all())
+            # …and reset recent interrupted ENHANCING sessions back to COMPLETED
+            # (FinalResult is preserved; the user can re-trigger /enhance).
+            enh_reset = await db.execute(
+                update(SessionModel)
+                .where(SessionModel.status == SessionStatus.ENHANCING)
+                .where(SessionModel.updated_at >= cutoff)
+                .values(status=SessionStatus.COMPLETED)
+                .returning(SessionModel.id)
+            )
+            enh_reset_ids = list(enh_reset.scalars().all())
             # Older RUNNING/ENHANCING zombies (beyond the window) → FAILED.
             stale = await db.execute(
                 update(SessionModel)
@@ -183,6 +198,8 @@ async def lifespan(app: FastAPI):
             _t.add_done_callback(_boot_resume_tasks.discard)
         if resume_ids:
             logger.warning(f"VR-21 — auto-resuming {len(resume_ids)} interrupted sessions: {resume_ids}")
+        if enh_reset_ids:
+            logger.warning(f"КАО#R1-03 — reset {len(enh_reset_ids)} interrupted ENHANCING sessions to COMPLETED: {enh_reset_ids}")
         if stale_ids:
             logger.warning(f"Reset {len(stale_ids)} stale zombie sessions to FAILED: {stale_ids}")
         if expired.rowcount:

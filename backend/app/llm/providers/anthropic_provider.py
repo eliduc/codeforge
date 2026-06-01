@@ -518,7 +518,18 @@ class AnthropicProvider(BaseLLMProvider):
                         f"Retrying with thinking_effort=low..."
                     )
                     retry_kwargs = dict(create_kwargs)
-                    retry_kwargs["output_config"] = {"effort": "low"}
+                    # КАО#R1-15 — only adaptive thinking accepts output_config.effort.
+                    # Legacy budget-thinking (Claude 4.5, type=enabled) must instead
+                    # lower budget_tokens; pairing type=enabled with an adaptive-only
+                    # output_config gets rejected and the retry silently no-ops.
+                    thinking_cfg = retry_kwargs.get("thinking")
+                    if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled":
+                        new_thinking = dict(thinking_cfg)
+                        new_thinking["budget_tokens"] = 2048
+                        retry_kwargs["thinking"] = new_thinking
+                        retry_kwargs.pop("output_config", None)
+                    else:
+                        retry_kwargs["output_config"] = {"effort": "low"}
                     # Bump max_tokens on retry to give more room for text output
                     orig_max = retry_kwargs.get("max_tokens", 32768)
                     retry_kwargs["max_tokens"] = max(orig_max, 64000)

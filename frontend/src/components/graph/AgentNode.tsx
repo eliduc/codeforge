@@ -466,30 +466,24 @@ function AgentNode({ data, selected }: AgentNodeProps) {
             >
               Disabled
             </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                if (data.onEnable) {
-                  data.onEnable(data.agentType, data.agentIndex)
-                } else {
-                  // TODO(backend wiring): no onEnable callback supplied — wire
-                  // this through SessionDetailPage to call updateAgentConfig
-                  // with { enabled: true } for this enhancer agent.
-                  console.warn(
-                    '[AgentNode] onEnable callback not wired — TODO: forward to updateAgentConfig({ enabled: true }) for',
-                    data.agentType,
-                    data.agentIndex,
-                  )
-                }
-              }}
-              className="hidden group-hover:inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors"
-              title="Enable this agent for the next run"
-              aria-label="Enable agent"
-            >
-              <Power className="w-3 h-3" />
-              Enable
-            </button>
+            {/* КАО#R1-08 — only render the Enable button when a handler is wired,
+                so it is never a dead control. The working path to re-enable an
+                agent is the gear icon → AgentConfigPopup 'enabled' toggle. */}
+            {data.onEnable && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  data.onEnable!(data.agentType, data.agentIndex)
+                }}
+                className="hidden group-hover:inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors"
+                title="Enable this agent for the next run"
+                aria-label="Enable agent"
+              >
+                <Power className="w-3 h-3" />
+                Enable
+              </button>
+            )}
           </div>
         )}
         

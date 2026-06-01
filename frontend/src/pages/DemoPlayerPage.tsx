@@ -584,6 +584,10 @@ export default function DemoPlayerPage() {
       if (isTypingTarget(e.target)) return
       // Don't fight the ConfirmDialog's own ESC/focus trap.
       if (tryConfirmOpen) return
+      // КАО#R1-06 — while the full-screen CodePreviewModal is open, its buttons
+      // are not typing targets, so Space/←/→/Home/End would silently drive the
+      // hidden background timeline (Home even restarts it). Suppress here.
+      if (typeof document !== 'undefined' && document.querySelector('[data-code-preview-modal]')) return
       switch (e.key) {
         case ' ':
         case 'Spacebar':
@@ -786,6 +790,8 @@ export default function DemoPlayerPage() {
                 chapter={state.currentChapter}
                 paused={state.pausedForChapter}
                 onContinue={continueChapter}
+                onReplay={restart}
+                isLast={!!(timeline.narration_chapters && timeline.narration_chapters[timeline.narration_chapters.length - 1]?.id === state.currentChapter.id)}
                 simplifiedCode={timeline.simplified_code}
                 finalCode={timeline.final_code}
                 onTryYourself={handleTryYourself}
@@ -853,7 +859,18 @@ export default function DemoPlayerPage() {
                 <div className="flex items-center gap-1.5">
                   <span className="text-gray-400 uppercase tracking-wide text-[10px]">Agents</span>
                   <span className="font-semibold text-white tabular-nums">
-                    {state.workflow.codersDone + state.workflow.testersDone}/{timeline.coders.length + timeline.testers.length * timeline.coders.length}
+                    {/* КАО#R1-01 — count done coder/tester NODES vs the real node
+                        count. The old numerator accumulated across iterations and the
+                        old denominator multiplied testers×coders, so multi-iteration
+                        demos showed impossible ratios (e.g. 11/6). This derives both
+                        sides from the current graph and never overflows. */}
+                    {(() => {
+                      const total = timeline.coders.length + timeline.testers.length
+                      const done = Object.entries(state.agents).filter(
+                        ([k, a]) => (k.startsWith('coder_') || k.startsWith('tester_')) && a.status === 'done',
+                      ).length
+                      return `${Math.min(done, total)}/${total}`
+                    })()}
                   </span>
                 </div>
               </div>
@@ -885,7 +902,10 @@ export default function DemoPlayerPage() {
                   }}
                   aria-hidden={!shouldShow}
                 >
-                  <div className="pointer-events-auto shadow-2xl shadow-black/60 rounded-lg">
+                  {/* КАО#R1-05 — when hidden (opacity 0) the inner subtree must not
+                      keep pointer-events:auto, otherwise the invisible spec panel
+                      swallows clicks/drag/hover over the top-left graph strip. */}
+                  <div className={`${shouldShow ? 'pointer-events-auto' : 'pointer-events-none'} shadow-2xl shadow-black/60 rounded-lg`}>
                     <SidebarSpec
                       spec={timeline.spec}
                       onManualClose={!inSpecChapter ? () => setSpecPanelOpen(false) : undefined}
@@ -951,6 +971,8 @@ export default function DemoPlayerPage() {
                 chapter={state.currentChapter}
                 paused={state.pausedForChapter}
                 onContinue={() => { continueChapter(); /* close drawer after Continue so the graph is visible */ setMobileTourOpen(false) }}
+                onReplay={() => { restart(); setMobileTourOpen(false) }}
+                isLast={!!(timeline.narration_chapters && timeline.narration_chapters[timeline.narration_chapters.length - 1]?.id === state.currentChapter.id)}
                 simplifiedCode={timeline.simplified_code}
                 finalCode={timeline.final_code}
                 onTryYourself={handleTryYourself}
@@ -1236,16 +1258,36 @@ function CodePreviewModal({
   code: string
   onClose: () => void
 }) {
-  // ESC closes the modal
+  // КАО#R1-07 — ESC to close + a focus trap so Tab/Shift+Tab cycle within the
+  // modal instead of leaking focus to the background player controls.
+  const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab') return
+      const root = rootRef.current
+      if (!root) return
+      const f = Array.from(
+        root.querySelectorAll<HTMLElement>('button, iframe, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+      ).filter(el => !el.hasAttribute('disabled'))
+      if (f.length === 0) return
+      const first = f[0], last = f[f.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (e.shiftKey && (active === first || !root.contains(active))) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (active === last || !root.contains(active))) { e.preventDefault(); first.focus() }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6" onClick={onClose}>
+    // КАО#R1-06 — data-code-preview-modal lets the page keydown handler detect
+    // that this modal is open and stop driving the background timeline.
+    <div ref={rootRef} data-code-preview-modal className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Demo code preview"
         className="relative bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-5xl h-[80vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
@@ -1280,9 +1322,11 @@ function CodePreviewModal({
             ✕
           </button>
         </div>
+        {/* КАО#R1-04 — drop allow-same-origin to match FinalIframe: allow-scripts
+            + allow-same-origin together defeats the iframe sandbox per MDN. */}
         <iframe
           srcDoc={code}
-          sandbox="allow-scripts allow-pointer-lock allow-same-origin"
+          sandbox="allow-scripts allow-pointer-lock"
           className="flex-1 w-full bg-black rounded-b-xl"
           title="Demo code preview"
         />
@@ -1362,6 +1406,8 @@ function ChapterSidePanel({
   chapter,
   paused,
   onContinue,
+  onReplay,
+  isLast,
   simplifiedCode,
   finalCode,
   onTryYourself,
@@ -1370,6 +1416,8 @@ function ChapterSidePanel({
   chapter: NarrationChapter
   paused: boolean
   onContinue: () => void
+  onReplay: () => void
+  isLast: boolean
   simplifiedCode?: string
   finalCode: string
   onTryYourself: () => void
@@ -1401,6 +1449,17 @@ function ChapterSidePanel({
     if (sec.action === 'run_simplified') setPreviewMode('simplified')
     else if (sec.action === 'run_final') setPreviewMode('final')
     else if (sec.action === 'try_yourself') onTryYourself()
+  }
+  // КАО#R1-02 — on the LAST chapter the primary button's label ("Replay from
+  // start" / "🚀 Try it yourself") must perform that action, not just play the
+  // final ~2-4s of the demo. (cta_label is otherwise only the button text.)
+  const onPrimary = () => {
+    if (isLast) {
+      const l = (chapter.cta_label || '').toLowerCase()
+      if (l.includes('replay')) { onReplay(); return }
+      if (l.includes('try')) { onTryYourself(); return }
+    }
+    onContinue()
   }
   return (
     <>
@@ -1490,9 +1549,9 @@ function ChapterSidePanel({
               playing — no dead space, no greyed-out control to misinterpret. */}
           {paused && (
             <button
-              onClick={onContinue}
+              onClick={onPrimary}
               className="ml-auto px-3 py-1.5 text-xs font-semibold rounded-md transition-colors bg-indigo-600 hover:bg-indigo-500 text-white"
-              title="Continue to the next phase"
+              title={isLast ? "Run this chapter's action" : 'Continue to the next phase'}
             >
               {chapter.cta_label ?? '▶ Continue'}
             </button>
@@ -1522,6 +1581,8 @@ function MobileTourDrawer({
   chapter,
   paused,
   onContinue,
+  onReplay,
+  isLast,
   simplifiedCode,
   finalCode,
   onTryYourself,
@@ -1532,6 +1593,8 @@ function MobileTourDrawer({
   chapter: NarrationChapter
   paused: boolean
   onContinue: () => void
+  onReplay: () => void
+  isLast: boolean
   simplifiedCode?: string
   finalCode: string
   onTryYourself: () => void
@@ -1545,6 +1608,15 @@ function MobileTourDrawer({
     if (sec.action === 'run_simplified') setPreviewMode('simplified')
     else if (sec.action === 'run_final') setPreviewMode('final')
     else if (sec.action === 'try_yourself') onTryYourself()
+  }
+  // КАО#R1-02 — same terminal-CTA routing as ChapterSidePanel.
+  const onPrimary = () => {
+    if (isLast) {
+      const l = (chapter.cta_label || '').toLowerCase()
+      if (l.includes('replay')) { onReplay(); return }
+      if (l.includes('try')) { onTryYourself(); return }
+    }
+    onContinue()
   }
   // Note: auto-open on `paused` is handled in the parent (DemoPlayerPage)
   // since `open` is a controlled prop. The drawer just renders the UI.
@@ -1632,9 +1704,9 @@ function MobileTourDrawer({
           {/* Same hide-when-not-paused contract as the desktop ChapterSidePanel. */}
           {paused && (
             <button
-              onClick={onContinue}
+              onClick={onPrimary}
               className="ml-auto px-3 py-1.5 text-xs font-semibold rounded-md transition-colors bg-indigo-600 hover:bg-indigo-500 text-white"
-              title="Continue to the next phase"
+              title={isLast ? "Run this chapter's action" : 'Continue to the next phase'}
             >
               {chapter.cta_label ?? '▶ Continue'}
             </button>

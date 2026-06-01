@@ -777,8 +777,14 @@ export default function SessionsPage() {
           <div
             className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
             onClick={() => applyingTemplateId === null && setApplyDialog(null)}
+            onKeyDown={(e) => { if (e.key === 'Escape' && applyingTemplateId === null) setApplyDialog(null) }}
           >
+            {/* КАО#R1-10 — role=dialog/aria-modal + Escape (the autoFocused input
+                bubbles the keydown up to this container). */}
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Use template ${applyDialog.name}`}
               className="bg-gray-800 rounded-xl p-6 w-full max-w-lg border border-gray-700"
               onClick={(e) => e.stopPropagation()}
             >
@@ -1072,7 +1078,7 @@ export default function SessionsPage() {
                           } as Record<string, string>)[session.language] || session.language}
                         </span>
                         <span>
-                          Iteration {session.current_iteration}/{session.max_iterations}
+                          Iteration {Math.min(session.current_iteration, session.max_iterations ?? session.current_iteration) /* КАО#R1-09: clamp transient over-cap, matching ITER-FIX in SessionDetailPage */}/{session.max_iterations}
                         </span>
                         <span>
                           Created {session.created_at ? formatDate(session.created_at) : 'Unknown'}

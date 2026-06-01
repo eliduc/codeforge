@@ -1078,7 +1078,10 @@ class WorkflowOrchestrator:
             await self.db.commit()
 
             await self.emit_event("awaiting_enhancement", {
-                "total_iterations": self.state.current_iteration,
+                # КАО#R1-11b — same real-executed-count fix as workflow_completed
+                # (this has_enhancers sibling branch was missed in R1-11), so the
+                # WS event and the persisted FinalResult report a consistent value.
+                "total_iterations": max(self.state.coder_iterations.values(), default=self.state.current_iteration),
                 "total_tokens": self.state.total_tokens,
                 "total_cost": self.state.total_cost,
                 "message": "Final code ready. Configure and run enhancement agents.",
@@ -1090,7 +1093,10 @@ class WorkflowOrchestrator:
             await self.db.commit()
 
             await self.emit_event("workflow_completed", {
-                "total_iterations": self.state.current_iteration,
+                # КАО#R1-11 — report the real executed iteration count. The loop
+                # increments current_iteration at the top before the terminal
+                # break, so it ends one higher than iterations actually run.
+                "total_iterations": max(self.state.coder_iterations.values(), default=self.state.current_iteration),
                 "total_tokens": self.state.total_tokens,
                 "total_cost": self.state.total_cost,
                 "coder_iterations": self.state.coder_iterations,
@@ -3381,7 +3387,8 @@ class WorkflowOrchestrator:
                     file_structure=file_structure,
                     readme_content=parsed.get("readme_content", ""),
                     selection_reasoning=parsed.get("selection_reasoning", ""),
-                    total_iterations=self.state.current_iteration,
+                    # КАО#R1-11 — real executed iteration count (see workflow_completed).
+                    total_iterations=max(self.state.coder_iterations.values(), default=self.state.current_iteration),
                     total_tokens=self.state.total_tokens,
                     total_cost_usd=self.state.total_cost,
                 )

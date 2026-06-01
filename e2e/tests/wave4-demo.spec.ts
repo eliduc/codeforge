@@ -4,9 +4,9 @@
  * Complements (does NOT replace) `wave3-demo.spec.ts` and `wave4-anonymous.spec.ts`.
  * Adds coverage that those specs did not yet exercise:
  *
- *   - Multi-template playback (mandelbulb / crystal / particles / snake)
+ *   - Multi-template playback (mandelbulb / murmuration / attractor / life / particles)
  *   - narration_chapters vs StatusPlaque presence per template
- *   - /demos gallery contents (4 cards, header copy, navigation, anon & auth)
+ *   - /demos gallery contents (5 cards, header copy, navigation, anon & auth)
  *   - Keyboard-shortcut edge cases (End-then-→, Home-then-←, typing inputs)
  *   - URL ?startAtChapter=N param support (probe; documented if absent)
  *   - Chapter narration completeness (mandelbulb: 14 chapters, all non-empty)
@@ -169,14 +169,14 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
       .toBeVisible({ timeout: 15_000 })
     // Featured Demos gallery rendered.
     await expect(page.getByText(/Featured Demos/i).first()).toBeVisible()
-    // All 4 cards rendered via "Watch demo" links.
+    // All 5 cards rendered via "Watch demo" links.
     for (const id of ['mandelbulb', 'murmuration', 'attractor', 'life', 'particles']) {
       await expect(page.locator(`a[href="/demo/${id}"]`).first())
         .toBeVisible({ timeout: 10_000 })
     }
   })
 
-  test('11b. /demos still renders anonymously (4 cards present)', async ({ page }) => {
+  test('11b. /demos still renders anonymously (5 cards present)', async ({ page }) => {
     await page.goto('/demos')
     await expect(page.getByRole('heading', { name: 'Demos', exact: true }))
       .toBeVisible({ timeout: 15_000 })

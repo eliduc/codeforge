@@ -5,7 +5,7 @@
     "description": "A WebGL2 ray-marched Mandelbulb strange-attractor that grows through phases as the fractal power n increases. The Anthropic team's favourite first run.",
     "language": "javascript_browser",
     "thumbnail": "🌐",
-    "duration_seconds": 90
+    "duration_seconds": 162
   },
   {
     "id": "murmuration",
