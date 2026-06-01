@@ -49,6 +49,9 @@ PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/auth/request-otp"),
     ("POST", "/api/auth/verify-otp"),
     ("POST", "/api/auth/request-access"),
+    # КАО#SG1-selfxss — logout is public by design: it only clears the session
+    # cookie and must succeed even when that cookie is already expired/invalid.
+    ("POST", "/api/auth/logout"),
     # Public share endpoints — by design (anyone with token can view)
     ("GET", "/api/share/{token}"),
     # Screenshots use in-URL signed token instead of Bearer, KAO#VR-22

@@ -117,6 +117,8 @@ import type { CheckpointResponse } from '../services/api'
 import type { SessionResponse, AgentConfigResponse, FinalResultResponse, ExecutionResult, ReconnectingWebSocket, WSConnectionState } from '../services/api'
 import type { EnhancementSuggestion, CuratedSuggestion, EnhancerAgentConfig, EnhancerSummarizerConfig, EnhanceRequest, AttachmentInfo } from '../types'
 import { useProvidersStore } from '../stores/providersStore'
+// КАО#SG1-selfxss — open generated HTML in a sandboxed (opaque-origin) tab.
+import { openSandboxedHtmlInNewTab } from '../utils/openSandboxedHtml'
 // КАО#VR-58 — pure thinking-effort logic extracted for unit-testability
 import { deriveThinkingControls, isAlwaysReasoning } from '../lib/thinkingEfforts'
 import SpecificationsDialog from '../components/common/SpecificationsDialog'
@@ -4620,27 +4622,15 @@ export default function SessionDetailPage() {
     }
   }
 
-  // Open preview in a new browser tab via blob URL.
-  // This loads the HTML as a proper page so CDN scripts work correctly.
+  // Open preview in a sandboxed browser tab (КАО#SG1-selfxss). The generated
+  // HTML runs inside an opaque-origin child iframe (see public/sandbox-tab.html)
+  // so it cannot read this app's localStorage/cookies or call its API, while
+  // CDN scripts still load and the page gets the full viewport.
   function handleOpenInNewTab() {
     if (!browserPreviewHtml) return
-    // Strip CSP meta tags before opening
-    const html = browserPreviewHtml.replace(
-      /<meta\s+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>/gi,
-      '<!-- CSP meta removed by CodeForge sandbox -->'
-    )
-    const blob = new Blob([html], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    const newWin = window.open(url, '_blank')
-    if (!newWin) {
-      URL.revokeObjectURL(url)
+    if (!openSandboxedHtmlInNewTab(browserPreviewHtml)) {
       notify.error('Popup blocked — please allow popups for this site')
-      return
     }
-    // Revoke blob URL after the page has loaded to free memory
-    scheduleTimeout(() => {
-      URL.revokeObjectURL(url)
-    }, 5000)
   }
 
   function getStatusColor(status: string): string {

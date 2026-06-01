@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
@@ -501,6 +501,7 @@ _screenshot_bearer = HTTPBearer(auto_error=False)
 
 @static_router.get("/api/screenshots/{session_id}/{code_version_id}/frame_{frame_index}.png")
 async def serve_screenshot(
+    request: Request,
     session_id: UUID,
     code_version_id: UUID,
     frame_index: int,
@@ -538,7 +539,10 @@ async def serve_screenshot(
             # Caller TRIED to use a signed URL but it was invalid/expired —
             # 404 (same as "not found", to avoid leaking existence).
             raise HTTPException(status_code=404, detail="Screenshot not found")
-        auth = await require_auth(credentials)
+        # КАО#SG1-selfxss — require_auth now needs the Request (to read the
+        # session cookie). Pass it explicitly since this is a direct call, not
+        # a Depends() resolution.
+        auth = await require_auth(request=request, credentials=credentials)
         current_user_id = get_current_user_id(auth)
 
     # Confirm the screenshot belongs to a code_version in the session the

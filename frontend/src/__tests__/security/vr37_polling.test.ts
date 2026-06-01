@@ -1,35 +1,31 @@
-// КАО Security writers — VR-37 polling / visibility-triggered refresh.
+// КАО#SG1-selfxss (was КАО#VR-37) — polling / visibility refresh security.
 //
-// Scope: The SessionDetailPage installs three fallback refresh mechanisms
-//   (visibilitychange, window focus, 30-s interval) on top of the WS-driven
-//   model. This file asserts the security-relevant invariants of that code:
+// The SessionDetailPage installs three fallback refresh mechanisms
+// (visibilitychange, window focus, 30-s interval) on top of the WS model.
+// After the httpOnly-cookie migration the security-relevant invariants of that
+// code shift from "always attach the Bearer token" to "always send the session
+// cookie and bounce to /login on 401":
 //
-//   1. apiFetch ALWAYS attaches the stored Bearer token, so a polled refresh
-//      can never reach the backend anonymously.
-//   2. If the token is cleared (e.g. user logged out) BEFORE a polling tick,
-//      the subsequent apiFetch sends NO Authorization header — which means
-//      the backend returns 401 and the SPA bounces to /login (i.e. polling
-//      cannot keep fetching protected data after logout).
-//   3. A 401 from a non-/api/auth/* endpoint triggers clearStoredToken() —
-//      i.e. once the backend rejects, we don't keep retrying with a stale
-//      token.
-//   4. The Bearer token never ends up in the URL query string for non-WS
-//      requests (would leak to access logs / Referer).
+//   1. apiFetch sends `credentials: 'same-origin'` on EVERY request, so the
+//      httpOnly session cookie rides every polled refresh — a refresh can never
+//      silently drop credentials and reach the backend anonymously.
+//   2. The JWT is NEVER attached as an Authorization header from JS (it's no
+//      longer JS-readable) and NEVER appears in the URL.
+//   3. A 401 from a protected endpoint clears the auth hint + navigates to
+//      /login → polling cannot keep looping after the session dies.
+//   4. A 401 from /api/auth/* does NOT redirect (the login form shows its error).
 //
-// We deliberately do NOT mount SessionDetailPage itself — the test would
-// have to mock React Query, the WS, and the whole sub-tree, which would
-// dilute the security signal. Instead we exercise the apiFetch layer
-// directly, which is the single point through which all REST refreshes
-// (polling, visibility, focus) go.
+// We exercise the apiFetch layer directly — the single point all REST
+// refreshes (polling, visibility, focus) flow through.
 //
-// КАО#VR-37 КАО general-sanity
+// КАО#SG1-selfxss КАО general-sanity
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   apiFetch,
-  clearStoredToken,
-  getStoredToken,
-  setStoredToken,
+  clearAuthedHint,
+  getAuthedHint,
+  setAuthedHint,
 } from '../../services/api'
 
 type MockFetch = ReturnType<typeof vi.fn> & {
@@ -58,120 +54,87 @@ function installFetchMock(
 
 beforeEach(() => {
   // Avoid jsdom navigation between tests by stubbing window.location.href.
-  // Vitest's vi.stubGlobal won't replace location wholesale on jsdom, so we
-  // monkey-patch the href setter via Object.defineProperty.
   const originalLocation = window.location
   Object.defineProperty(window, 'location', {
     writable: true,
     value: { ...originalLocation, href: 'http://localhost/' },
   })
-  clearStoredToken()
+  clearAuthedHint()
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
-  clearStoredToken()
+  clearAuthedHint()
 })
 
-// КАО#VR-37 — polling-style refresh ATTACHES Bearer when a token exists.
-describe('VR-37 — apiFetch attaches Bearer on every refresh', () => {
-  it('uses stored token for a refresh GET (simulates 30-s poll)', async () => {
-    setStoredToken('test-jwt-token-abcdef')
+// КАО#SG1-selfxss — every refresh carries the cookie (via credentials), no Bearer.
+describe('SG1 — apiFetch sends the session cookie on every refresh', () => {
+  it('sets credentials:"same-origin" so the httpOnly cookie rides a poll GET', async () => {
     const fetchMock = installFetchMock([{ status: 200, body: { id: 'sess-1' } }])
 
     const result = await apiFetch('/api/sessions/sess-1')
     expect(result).toEqual({ id: 'sess-1' })
 
-    // Inspect the actual Authorization header.
     const [, init] = fetchMock.mock.calls[0]
-    const headers = (init as RequestInit).headers as Record<string, string>
-    expect(headers['Authorization']).toBe('Bearer test-jwt-token-abcdef')
+    expect((init as RequestInit).credentials).toBe('same-origin')
 
-    // Token does NOT appear in URL.
+    // No Authorization header is synthesised from JS anymore.
+    const headers = (init as RequestInit).headers as Record<string, string>
+    expect(headers['Authorization']).toBeUndefined()
+
+    // And no token in the URL.
     const [url] = fetchMock.mock.calls[0]
-    expect(String(url)).not.toContain('test-jwt-token-abcdef')
     expect(String(url)).not.toContain('access_token=')
+    expect(String(url)).not.toMatch(/token=/i)
   })
 
-  it('does NOT attach Authorization if no token (i.e. after logout)', async () => {
-    // Simulate logout: clearStoredToken was called before this poll tick.
-    clearStoredToken()
-    expect(getStoredToken()).toBeNull()
+  it('still sends credentials with no auth hint (the cookie is the source of truth)', async () => {
+    clearAuthedHint()
+    expect(getAuthedHint()).toBe(false)
 
     const fetchMock = installFetchMock([{ status: 200, body: [] }])
     await apiFetch('/api/sessions/')
     const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).credentials).toBe('same-origin')
     const headers = (init as RequestInit).headers as Record<string, string>
     expect(headers['Authorization']).toBeUndefined()
   })
 })
 
-// КАО#VR-37 — 401 clears the token and redirects → polling can't loop.
-describe('VR-37 — 401 from polling tick logs the user out', () => {
-  it('clears stored token and navigates to /login on 401', async () => {
-    setStoredToken('stale-jwt-aaaa')
+// КАО#SG1-selfxss — 401 clears the hint and redirects → polling can't loop.
+describe('SG1 — 401 from a polling tick logs the user out', () => {
+  it('clears the auth hint and navigates to /login on 401', async () => {
+    setAuthedHint()
     installFetchMock([{ status: 401, body: { detail: 'Token expired' } }])
 
     await expect(apiFetch('/api/sessions/abc')).rejects.toThrow(/log in again/i)
 
-    // Side effect 1: token cleared so the NEXT poll has no Bearer header.
-    expect(getStoredToken()).toBeNull()
-    // Side effect 2: navigation to /login (the harness moved window.location.href).
+    // Side effect 1: hint cleared so the SPA treats the user as logged out.
+    expect(getAuthedHint()).toBe(false)
+    // Side effect 2: navigation to /login.
     expect(window.location.href).toMatch(/\/login$/)
   })
 
-  it('after a 401 cleared the token, a subsequent fetch is anonymous (no Bearer)', async () => {
-    setStoredToken('jwt-to-be-invalidated')
-    // First call returns 401 → token cleared
-    installFetchMock([
-      { status: 401, body: { detail: 'expired' } },
-    ])
-    await expect(apiFetch('/api/sessions/x')).rejects.toThrow(/log in/i)
-
-    // Second call uses a fresh fetch mock; assert no Bearer
-    const second = installFetchMock([{ status: 200, body: { id: 'x' } }])
-    await apiFetch('/api/sessions/x')
-    const [, init] = second.mock.calls[0]
-    const headers = (init as RequestInit).headers as Record<string, string>
-    expect(headers['Authorization']).toBeUndefined()
-  })
-
   it('401 on /api/auth/* DOES NOT redirect (login form needs to show error)', async () => {
-    setStoredToken('bad-otp')
+    setAuthedHint()
     installFetchMock([{ status: 401, body: { detail: 'Bad OTP' } }])
     await expect(apiFetch('/api/auth/verify-otp', { method: 'POST' })).rejects.toThrow()
-    // Token should still be there — auth endpoints bypass the auto-clear.
-    expect(getStoredToken()).toBe('bad-otp')
+    // Hint should still be there — auth endpoints bypass the auto-clear.
+    expect(getAuthedHint()).toBe(true)
     // No navigation.
     expect(window.location.href).not.toMatch(/\/login$/)
   })
 })
 
-// КАО general-sanity — Bearer never leaks to URL or browser-side artefacts.
-describe('VR-37 — no token leakage in URLs', () => {
-  it('never appends token as ?access_token=… (uses header)', async () => {
-    setStoredToken('eyJsensitive')
+// КАО general-sanity — no token leakage in URLs.
+describe('SG1 — no token leakage in URLs', () => {
+  it('never appends a token as a query param (uses the cookie)', async () => {
     const fetchMock = installFetchMock([{ status: 200, body: { ok: true } }])
     await apiFetch('/api/sessions/abc')
     const [url] = fetchMock.mock.calls[0]
     const s = String(url)
     expect(s).not.toMatch(/access_token=/i)
-    expect(s).not.toMatch(/token=eyJ/i)
+    expect(s).not.toMatch(/token=/i)
     expect(s).not.toMatch(/bearer/i)
-  })
-
-  it('does not log the token to console on error (smoke check)', async () => {
-    setStoredToken('eyJSUPERSECRET')
-    installFetchMock([{ status: 500, body: { detail: 'oops' } }])
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      await apiFetch('/api/sessions/abc').catch(() => {})
-      for (const call of errSpy.mock.calls) {
-        const msg = call.map(String).join(' ')
-        expect(msg).not.toContain('eyJSUPERSECRET')
-      }
-    } finally {
-      errSpy.mockRestore()
-    }
   })
 })

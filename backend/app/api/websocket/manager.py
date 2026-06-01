@@ -20,7 +20,18 @@ WS_RECEIVE_TIMEOUT = WS_RECEIVE_TIMEOUT_SEC  # 5 minutes
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
-from app.api.auth import decode_jwt_token, validate_ws_api_key
+from app.api.auth import SESSION_COOKIE_NAME, decode_jwt_token, validate_ws_api_key
+
+
+def _ws_token(websocket: WebSocket) -> str | None:
+    """КАО#SG1-selfxss — resolve the WS auth token.
+
+    Browser clients now authenticate via the httpOnly ``codeforge_session``
+    cookie (sent automatically on the same-origin WS handshake), so JS no
+    longer needs to put the JWT in the URL. The ``?token=`` query param is
+    still honoured first for API-key / programmatic clients.
+    """
+    return websocket.query_params.get("token") or websocket.cookies.get(SESSION_COOKIE_NAME)
 
 # Maximum incoming WS message size (bytes) — reject oversized payloads
 MAX_WS_MESSAGE_SIZE = WS_MAX_MESSAGE_SIZE_BYTES  # 64 KB
@@ -200,8 +211,8 @@ session_manager = ConnectionManager()
 @ws_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
-    # Authenticate via query param ?token=...
-    token = websocket.query_params.get("token")
+    # Authenticate via ?token=... or the httpOnly session cookie (КАО#SG1-selfxss).
+    token = _ws_token(websocket)
     if not validate_ws_api_key(token):
         await websocket.close(code=4001, reason="Unauthorized")
         return
@@ -365,8 +376,8 @@ async def session_websocket_endpoint(websocket: WebSocket, session_id: str):
         await websocket.close(code=4002, reason="Invalid session ID format")
         return
 
-    # Authenticate via query param ?token=...
-    token = websocket.query_params.get("token")
+    # Authenticate via ?token=... or the httpOnly session cookie (КАО#SG1-selfxss).
+    token = _ws_token(websocket)
     if not validate_ws_api_key(token):
         await websocket.close(code=4001, reason="Unauthorized")
         return

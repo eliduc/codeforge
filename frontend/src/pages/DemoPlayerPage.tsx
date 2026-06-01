@@ -59,6 +59,8 @@ import {
   type NarrationChapter,
 } from '../hooks/useTimelinePlayer'
 import { createSession } from '../services/api'
+// КАО#SG1-selfxss — open generated HTML in a sandboxed (opaque-origin) tab.
+import { openSandboxedHtmlInNewTab } from '../utils/openSandboxedHtml'
 // Улучшатели#4 P1·L — responsive layout <900px.
 import { useMediaQuery } from '../hooks/useMediaQuery'
 // КАО#R14-FIX-01 (HIGH) — Demo de-auth: gate "Try it yourself" on auth state.
@@ -67,25 +69,15 @@ import { useAuthStore } from '../stores/authStore'
 // Улучшатели#4 P1·S — speed presets aligned with DemosPage "60× speed" promise.
 const SPEEDS = [0.5, 1, 2, 4, 8, 16, 60]
 
-/** MURMUR-DEMO — open self-contained HTML in a new browser tab: a real page
- *  load (blob URL) so CDN scripts run and the app gets the full viewport.
- *  Mirrors SessionDetailPage's "Open in new tab" so the demo's final result
- *  opens in a full separate window exactly like a real session's. */
+/** MURMUR-DEMO / КАО#SG1-selfxss — open self-contained HTML in a sandboxed
+ *  browser tab. The HTML runs inside an opaque-origin child iframe (see
+ *  public/sandbox-tab.html) so it can't touch the app origin, while CDN
+ *  scripts (e.g. three.js) still load and the page gets the full viewport.
+ *  Mirrors SessionDetailPage's "Open in new tab". */
 function openHtmlInNewWindow(code: string) {
-  // Strip CSP meta tags so CDN scripts (e.g. three.js) load in the new tab.
-  const html = code.replace(
-    /<meta\s+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>/gi,
-    '<!-- CSP meta removed by CodeForge -->',
-  )
-  const blob = new Blob([html], { type: 'text/html' })
-  const url = URL.createObjectURL(blob)
-  const win = window.open(url, '_blank')
-  if (!win) {
-    URL.revokeObjectURL(url)
+  if (!openSandboxedHtmlInNewTab(code)) {
     notify.error('Popup blocked — please allow popups for this site')
-    return
   }
-  window.setTimeout(() => URL.revokeObjectURL(url), 5000)
 }
 
 /** Derive a human-friendly status sentence from current player state.

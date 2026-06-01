@@ -138,8 +138,10 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
     try {
+      // КАО#SG1-selfxss — verify-otp set the JWT as an httpOnly cookie; we no
+      // longer stash the token client-side. Just record the user from the body.
       const result = await verifyOTP(email.trim(), codeStr)
-      login(result.access_token, result.user)
+      login(result.user)
       navigate(from, { replace: true })
     } catch (err) {
       // Улучшатели#1 P2·S — OTP error class-distinguish: only wipe digits on a

@@ -4,11 +4,12 @@
 // overlap with kao_vr25_to_27.test.tsx (which covers the error-message
 // flattening branch of apiFetch). Instead we cover:
 //   • analyzeSpec across languages, including Russian-Cyrillic substrings.
-//   • apiFetch:
-//       - 401 clears the token + redirects to /login (the auth-loop guard).
+//   • apiFetch (КАО#SG1-selfxss — httpOnly cookie model):
+//       - sends credentials:'same-origin' so the session cookie rides every call.
+//       - never attaches a JWT Authorization header from JS (token isn't readable).
+//       - 401 clears the auth hint + redirects to /login (the auth-loop guard).
 //       - timeout (AbortController) surfaces a "Request timeout after Xms".
 //       - 204 No Content returns undefined (not "throws on empty body").
-//       - Bearer token is attached when a stored token is present.
 //       - Auth-endpoints (/api/auth/*) do NOT trigger the redirect on 401
 //         (so the login form can show "wrong code" without bouncing).
 //
@@ -20,9 +21,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { analyzeSpec, BROWSER_RENDERABLE_LANGUAGES } from '../lib/visualReviewHints'
 import {
   apiFetch,
-  clearStoredToken,
-  getStoredToken,
-  setStoredToken,
+  clearAuthedHint,
+  clearLegacyToken,
+  getAuthedHint,
+  setAuthedHint,
 } from '../services/api'
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -168,15 +170,15 @@ describe('analyzeSpec — suggestSwitch logic', () => {
 // 2. apiFetch — Bearer attachment + 401 redirect + timeout + 204 No Content.
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
+describe('apiFetch — cookie creds + 401 + 204 + timeout (КАО#SG1)', () => {
   const originalFetch = globalThis.fetch
   // Capture the original window.location so we can restore it.
   const originalLocation = window.location
 
   beforeEach(() => {
     globalThis.fetch = vi.fn() as typeof globalThis.fetch
-    // Each test starts with a clean token store.
-    clearStoredToken()
+    // Each test starts with a clean auth hint.
+    clearAuthedHint()
     // Re-mock window.location so we can detect the redirect.
     // (jsdom's location is non-configurable by default; replace via Object.defineProperty.)
     Object.defineProperty(window, 'location', {
@@ -188,7 +190,7 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
-    clearStoredToken()
+    clearAuthedHint()
     Object.defineProperty(window, 'location', {
       configurable: true,
       writable: true,
@@ -196,9 +198,9 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
     })
   })
 
-  // КАО#Full-A2 — apiFetch attaches Bearer header from localStorage.
-  it('attaches Authorization: Bearer <token> when a token is stored', async () => {
-    setStoredToken('my-jwt')
+  // КАО#SG1-selfxss — apiFetch sends the session cookie via credentials, and
+  // never attaches a JWT Authorization header from JS.
+  it('sends credentials:"same-origin" and no Authorization header', async () => {
     ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -210,12 +212,15 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
     const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(callArgs).toBeDefined()
     const init = callArgs?.[1] as RequestInit
+    expect(init.credentials).toBe('same-origin')
     const headers = init.headers as Record<string, string>
-    expect(headers.Authorization).toBe('Bearer my-jwt')
+    expect(headers.Authorization).toBeUndefined()
   })
 
-  // КАО#Full-A2 — when no token, no Authorization header is set.
-  it('omits Authorization when no token is stored', async () => {
+  // КАО#SG1-selfxss — the cookie is the only credential; no Authorization is
+  // ever synthesised, even when the (non-sensitive) auth hint is absent.
+  it('omits Authorization and relies on the cookie even with no hint', async () => {
+    clearAuthedHint()
     ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -226,14 +231,15 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
 
     const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
     const init = callArgs?.[1] as RequestInit
+    expect(init.credentials).toBe('same-origin')
     const headers = init.headers as Record<string, string>
     expect(headers.Authorization).toBeUndefined()
   })
 
-  // КАО#Full-A2 — 401 on non-auth endpoint clears token + redirects.
-  it('on 401 (non-auth path): clears token and redirects to /login', async () => {
-    setStoredToken('expired-jwt')
-    expect(getStoredToken()).toBe('expired-jwt')
+  // КАО#SG1-selfxss — 401 on a non-auth endpoint clears the hint + redirects.
+  it('on 401 (non-auth path): clears the auth hint and redirects to /login', async () => {
+    setAuthedHint()
+    expect(getAuthedHint()).toBe(true)
 
     ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
@@ -248,8 +254,8 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
       caught = e
     }
 
-    // Token must be cleared.
-    expect(getStoredToken()).toBeNull()
+    // Hint must be cleared so the SPA treats the user as logged out.
+    expect(getAuthedHint()).toBe(false)
     // Redirect must have been triggered.
     expect(window.location.href).toBe('/login')
     // The thrown error explains the session expired.
@@ -257,9 +263,9 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
     expect((caught as Error).message).toMatch(/session expired/i)
   })
 
-  // КАО#Full-A2 — 401 on /api/auth/* must NOT clear or redirect (login UX).
-  it('on 401 from /api/auth/*: does NOT redirect or clear token', async () => {
-    setStoredToken('some-jwt')
+  // КАО#SG1-selfxss — 401 on /api/auth/* must NOT clear the hint or redirect.
+  it('on 401 from /api/auth/*: does NOT redirect or clear the hint', async () => {
+    setAuthedHint()
     ;(globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       status: 401,
@@ -273,9 +279,9 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
       caught = e
     }
 
-    // Token must NOT be cleared — the user might still have a valid one
+    // Hint must NOT be cleared — the user may still have a valid session
     // (e.g. they're verifying an unrelated OTP).
-    expect(getStoredToken()).toBe('some-jwt')
+    expect(getAuthedHint()).toBe(true)
     // No redirect.
     expect(window.location.href).toBe('http://localhost/')
     // Error still surfaces with the server's detail.
@@ -367,32 +373,39 @@ describe('apiFetch — Bearer + 401 + 204 + timeout', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// 3. Token storage helpers — round-trip + idempotent clear.
+// 3. Auth session helpers — hint flag + legacy-token purge (КАО#SG1-selfxss).
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('Token storage helpers', () => {
-  beforeEach(() => clearStoredToken())
-  afterEach(() => clearStoredToken())
-
-  // КАО#Full-A2 — set/get/clear contract.
-  it('round-trips set -> get', () => {
-    setStoredToken('jwt-abc')
-    expect(getStoredToken()).toBe('jwt-abc')
+describe('Auth session helpers', () => {
+  beforeEach(() => {
+    clearAuthedHint()
+    localStorage.removeItem('codeforge_token')
+  })
+  afterEach(() => {
+    clearAuthedHint()
+    localStorage.removeItem('codeforge_token')
   })
 
-  it('returns null when nothing is stored', () => {
-    expect(getStoredToken()).toBeNull()
+  // КАО#SG1-selfxss — the hint is a non-sensitive boolean flag, not a token.
+  it('round-trips set -> get on the auth hint', () => {
+    setAuthedHint()
+    expect(getAuthedHint()).toBe(true)
+    expect(localStorage.getItem('codeforge_authed')).toBe('1')
   })
 
-  it('clear is idempotent (no error when token absent)', () => {
-    clearStoredToken()
-    clearStoredToken()
-    expect(getStoredToken()).toBeNull()
+  it('reports not-authed when nothing is stored', () => {
+    expect(getAuthedHint()).toBe(false)
   })
 
-  it('setStoredToken overwrites existing token', () => {
-    setStoredToken('first')
-    setStoredToken('second')
-    expect(getStoredToken()).toBe('second')
+  it('clearAuthedHint is idempotent', () => {
+    clearAuthedHint()
+    clearAuthedHint()
+    expect(getAuthedHint()).toBe(false)
+  })
+
+  it('clearLegacyToken purges a JWT left under the legacy localStorage key', () => {
+    localStorage.setItem('codeforge_token', 'eyJ.legacy.jwt')
+    clearLegacyToken()
+    expect(localStorage.getItem('codeforge_token')).toBeNull()
   })
 })

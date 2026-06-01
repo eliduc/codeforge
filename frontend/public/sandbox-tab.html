@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeForge Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; }
+  body { background: #000; color: #ccc; font-family: system-ui, sans-serif; overflow: hidden; }
+  #__loading { display: flex; align-items: center; justify-content: center; height: 100vh; font-size: 16px; color: #888; }
+  #__preview-frame { width: 100%; height: 100vh; border: none; display: block; }
+</style>
+</head>
+<body>
+<div id="__loading">Loading preview…</div>
+<script>
+// КАО#SG1-selfxss — Sandboxed preview TAB.
+//
+// Opened via window.open() from the app to show LLM-generated HTML in a full
+// browser tab WITHOUT giving that HTML access to the app's origin
+// (localStorage / cookies / same-origin fetch). The untrusted HTML runs inside
+// a child <iframe sandbox="allow-scripts ..."> WITHOUT allow-same-origin, so it
+// executes in an OPAQUE origin and cannot reach this page or the opener.
+//
+// This page itself is a thin, first-party, same-origin document — it only
+// brokers a postMessage handshake, holds no secrets, and runs no untrusted
+// code. nginx serves it with a PERMISSIVE CSP (frontend Dockerfile,
+// `location = /sandbox-tab.html`) so the child srcdoc inherits permissive
+// rules and CDN scripts (three.js, p5.js, D3, …) load freely.
+//
+// NOTE: the CSP-strip + CDN-patch logic below is intentionally kept identical
+// to public/sandbox-frame.html (the in-app preview). Keep the two in sync.
+
+function patchCdnUrls(html) {
+  // Three.js r161+ removed build/three.min.js and build/three.js (UMD builds).
+  // Rewrite to r160 — the last version that ships them.
+  return html.replace(
+    /three@0\.(16[1-9]|1[7-9]\d|[2-9]\d\d|\d{4,})\.\d+\/build\/three(\.min)?\.js/g,
+    'three@0.160.0/build/three.min.js'
+  );
+}
+
+function render(html) {
+  // Strip CSP meta tags that would block CDN script loading.
+  html = html.replace(
+    /<meta\s+http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>/gi,
+    '<!-- CSP meta removed by CodeForge sandbox -->'
+  );
+  html = patchCdnUrls(html);
+
+  var loading = document.getElementById('__loading');
+  if (loading) loading.remove();
+  var old = document.getElementById('__preview-frame');
+  if (old) old.remove();
+
+  var frame = document.createElement('iframe');
+  frame.id = '__preview-frame';
+  // SECURITY: deliberately NO 'allow-same-origin'. The generated HTML runs in
+  // an opaque origin and cannot read this page's / the app's storage, cookies,
+  // or call the app's same-origin API.
+  frame.setAttribute('sandbox', 'allow-scripts allow-modals allow-forms allow-popups');
+  frame.style.cssText = 'width:100%;height:100vh;border:none;display:block;';
+  frame.srcdoc = html;
+  document.body.appendChild(frame);
+}
+
+var rendered = false;
+window.addEventListener('message', function (event) {
+  // Only accept the payload from the opener that launched us, same-origin.
+  if (event.origin !== window.location.origin) return;
+  if (window.opener && event.source !== window.opener) return;
+  var data = event.data;
+  if (!data || data.type !== 'codeforge-preview' || typeof data.html !== 'string') return;
+  if (rendered) return;  // ignore duplicate/fallback deliveries
+  rendered = true;
+  render(data.html);
+});
+
+// Signal the opener that we're ready to receive the HTML.
+if (window.opener) {
+  window.opener.postMessage({ type: 'codeforge-sandbox-ready' }, window.location.origin);
+}
+</script>
+</body>
+</html>

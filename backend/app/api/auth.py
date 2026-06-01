@@ -13,7 +13,7 @@ import hmac
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
@@ -26,6 +26,28 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 # JWT constants
 _JWT_ALGORITHM = "HS256"
+
+# КАО#SG1-selfxss — name of the httpOnly cookie that carries the session JWT
+# for browser clients. Kept distinct from the legacy `codeforge_token`
+# localStorage key so the migration is unambiguous.
+SESSION_COOKIE_NAME = "codeforge_session"
+
+
+def cookie_secure_flag(request: Request | None) -> bool:
+    """КАО#SG1-selfxss — decide the Secure flag for the session cookie.
+
+    Fail-safe toward "login works": only mark the cookie Secure when we have a
+    *positive* https signal from the proxy (``X-Forwarded-Proto: https``). When
+    the header is absent we return False so local-dev (http) login still works —
+    the only cost on an https deployment that forgot the proxy header is a
+    missing Secure attribute, never a broken login. ``COOKIE_SECURE`` overrides.
+    """
+    override = get_settings().cookie_secure
+    if override is not None:
+        return override
+    if request is None:
+        return False
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +124,19 @@ def _is_auth_configured() -> bool:
 # ---------------------------------------------------------------------------
 
 async def require_auth(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> dict | None:
     """Unified FastAPI dependency for authentication.
 
     Returns a dict with user info (from JWT) or None (API key / dev mode).
     Raises 401 if authentication fails.
+
+    КАО#SG1-selfxss — accepts the session JWT from EITHER the Authorization
+    Bearer header (API-key + programmatic clients) OR the httpOnly
+    ``codeforge_session`` cookie (browser clients). The header is tried first
+    so existing behaviour is unchanged. Direct (non-Depends) callers must pass
+    ``request`` explicitly.
     """
     settings = get_settings()
 
@@ -115,19 +144,21 @@ async def require_auth(
     if not _is_auth_configured():
         return None
 
-    token = credentials.credentials if credentials else None
+    header_token = credentials.credentials if credentials else None
+    cookie_token = request.cookies.get(SESSION_COOKIE_NAME) if request is not None else None
 
-    if token:
-        # Try JWT first
-        payload = decode_jwt_token(token)
-        if payload:
-            return payload
+    # Try a JWT from either source — header first, then cookie.
+    for token in (header_token, cookie_token):
+        if token:
+            payload = decode_jwt_token(token)
+            if payload:
+                return payload
 
-        # Try API key fallback
-        if settings.codeforge_api_key:
-            expected = settings.codeforge_api_key.get_secret_value()
-            if expected and expected.strip() and hmac.compare_digest(token, expected):
-                return None  # API key auth — no user context
+    # API key fallback — header only (cookies never carry the machine key).
+    if header_token and settings.codeforge_api_key:
+        expected = settings.codeforge_api_key.get_secret_value()
+        if expected and expected.strip() and hmac.compare_digest(header_token, expected):
+            return None  # API key auth — no user context
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -171,10 +202,11 @@ def validate_ws_token(token: str | None) -> bool:
 # ---------------------------------------------------------------------------
 
 async def require_api_key(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> None:
     """Legacy wrapper — delegates to require_auth."""
-    await require_auth(credentials)
+    await require_auth(request, credentials)
 
 
 validate_ws_api_key = validate_ws_token

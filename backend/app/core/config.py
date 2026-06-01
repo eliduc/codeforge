@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     jwt_expiry_minutes: int = 1440  # 24 hours
     otp_expiry_minutes: int = 5
     otp_length: int = 6
+    # КАО#SG1-selfxss — the browser session JWT is delivered via an httpOnly
+    # cookie (not localStorage). The cookie's Secure flag is auto-derived from
+    # the X-Forwarded-Proto header when this is None (True over https, False
+    # over http so local dev login keeps working). Set True/False to force.
+    cookie_secure: bool | None = None
 
     @field_validator("database_url", mode="before")
     @classmethod

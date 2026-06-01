@@ -16,21 +16,41 @@ export const AUTH_TOKEN = process.env.E2E_AUTH_TOKEN ?? ''
 export const TEST_SESSION_ID = process.env.E2E_TEST_SESSION_ID ?? ''
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3300'
 
-/** Inject the JWT into localStorage BEFORE any page script runs. */
+/** Authenticate the browser context BEFORE any page script runs.
+ *
+ * КАО#SG1-selfxss — the JWT now rides an httpOnly `codeforge_session` cookie
+ * (no longer localStorage). Playwright can set httpOnly cookies at the protocol
+ * level, so we add the cookie to the context (it then accompanies every request
+ * and the WS handshake). We also set the non-sensitive `codeforge_authed` hint
+ * flag so the SPA validates the session on startup instead of treating the user
+ * as anonymous.
+ */
 export async function injectAuth(context: BrowserContext): Promise<void> {
   if (!AUTH_TOKEN) return
-  // matches AUTH_TOKEN_KEY = 'codeforge_token' in frontend/src/services/api.ts
+  const url = new URL(BASE_URL)
+  await context.addCookies([
+    {
+      name: 'codeforge_session',
+      value: AUTH_TOKEN,
+      domain: url.hostname,
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: url.protocol === 'https:',
+    },
+  ])
   await context.addInitScript(
-    ({ token, baseUrl }) => {
+    ({ baseUrl }) => {
       try {
-        localStorage.setItem('codeforge_token', token)
-        // Also stash the base URL hint so any debug logs are unambiguous.
+        // Non-sensitive hint so AuthStore.loadFromStorage() validates the
+        // session (the JWT itself is in the httpOnly cookie, not here).
+        localStorage.setItem('codeforge_authed', '1')
         ;(window as unknown as { __cf_e2e_base?: string }).__cf_e2e_base = baseUrl
       } catch {
         /* localStorage may be restricted; tests will fail anyway */
       }
     },
-    { token: AUTH_TOKEN, baseUrl: BASE_URL }
+    { baseUrl: BASE_URL }
   )
 }
 

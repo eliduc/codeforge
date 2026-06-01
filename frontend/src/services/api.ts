@@ -161,20 +161,36 @@ export interface ProvidersResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Auth token helpers
+// Auth session helpers (КАО#SG1-selfxss)
 // ---------------------------------------------------------------------------
-const AUTH_TOKEN_KEY = 'codeforge_token'
+// The JWT now lives in an httpOnly `codeforge_session` cookie set by the
+// backend — JavaScript can NOT read it, so a same-origin XSS (e.g. a preview
+// tab opened from generated code) can no longer exfiltrate it. The cookie is
+// sent automatically on same-origin requests (REST + the WS handshake).
+//
+// We keep a single NON-sensitive hint flag in localStorage so the SPA knows
+// whether to validate the session on startup (avoids a guaranteed 401 + its
+// console noise on the anonymous /login page). The flag is just '1' — reading
+// or forging it grants no access; only the httpOnly cookie does.
+const AUTHED_HINT_KEY = 'codeforge_authed'
+const LEGACY_TOKEN_KEY = 'codeforge_token'
 
-export function getStoredToken(): string | null {
-  return localStorage.getItem(AUTH_TOKEN_KEY)
+export function setAuthedHint(): void {
+  localStorage.setItem(AUTHED_HINT_KEY, '1')
 }
 
-export function setStoredToken(token: string): void {
-  localStorage.setItem(AUTH_TOKEN_KEY, token)
+export function getAuthedHint(): boolean {
+  return localStorage.getItem(AUTHED_HINT_KEY) === '1'
 }
 
-export function clearStoredToken(): void {
-  localStorage.removeItem(AUTH_TOKEN_KEY)
+export function clearAuthedHint(): void {
+  localStorage.removeItem(AUTHED_HINT_KEY)
+}
+
+/** One-time migration: purge any legacy JWT left in localStorage by older
+ *  builds so it can't be read by same-origin XSS. The cookie replaces it. */
+export function clearLegacyToken(): void {
+  localStorage.removeItem(LEGACY_TOKEN_KEY)
 }
 
 // Default request timeout (30 seconds)
@@ -195,21 +211,22 @@ async function apiFetchRaw(
       ? { ...(options.headers as Record<string, string>) }
       : { 'Content-Type': 'application/json' }
 
-    // Attach Bearer token if available
-    const token = getStoredToken()
-    if (token && !headers['Authorization']) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
-
+    // КАО#SG1-selfxss — auth now rides the httpOnly `codeforge_session` cookie,
+    // sent automatically on same-origin requests. No Authorization header is
+    // attached from JS (the token is no longer JS-readable). `credentials:
+    // 'same-origin'` is the fetch default but set explicitly for clarity.
     const response = await fetch(url, {
       ...options,
       signal: controller.signal,
       headers,
+      credentials: 'same-origin',
     })
 
-    // Handle 401 — clear token and redirect to login
+    // Handle 401 — clear the session hint and redirect to login. The httpOnly
+    // cookie is already invalid/expired server-side and gets overwritten on the
+    // next successful login. КАО#SG1-selfxss.
     if (response.status === 401 && !endpoint.startsWith('/api/auth/')) {
-      clearStoredToken()
+      clearAuthedHint()
       window.location.href = '/login'
       throw new Error('Session expired. Please log in again.')
     }
@@ -943,9 +960,10 @@ export function createWebSocket(
   }
 
   function buildWsUrl() {
-    const token = getStoredToken()
-    const base = `${WS_URL}/ws/${sessionId}`
-    return token ? `${base}?token=${encodeURIComponent(token)}` : base
+    // КАО#SG1-selfxss — the httpOnly session cookie is sent automatically on
+    // the same-origin WS handshake, so the JWT no longer travels in the URL
+    // (keeping it out of nginx access logs / browser history).
+    return `${WS_URL}/ws/${sessionId}`
   }
 
   current = new WebSocket(buildWsUrl())
@@ -1022,6 +1040,11 @@ export async function verifyOTP(
 
 export async function getCurrentUser(): Promise<AuthUser & { created_at: string; last_login_at: string | null }> {
   return apiFetch('/api/auth/me')
+}
+
+/** КАО#SG1-selfxss — clear the httpOnly session cookie on the server. */
+export async function logoutApi(): Promise<void> {
+  await apiFetch<void>('/api/auth/logout', { method: 'POST' })
 }
 
 /**

@@ -11,12 +11,18 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, func as sa_func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import check_email_allowed, create_jwt_token, require_auth
+from app.api.auth import (
+    SESSION_COOKIE_NAME,
+    check_email_allowed,
+    cookie_secure_flag,
+    create_jwt_token,
+    require_auth,
+)
 from app.config import get_settings
 from app.db import AsyncSessionLocal
 from app.db.models import OTPCode, User
@@ -141,7 +147,7 @@ async def request_otp(body: OTPRequest):
 
 
 @router.post("/verify-otp", response_model=TokenResponse)
-async def verify_otp(body: OTPVerify):
+async def verify_otp(body: OTPVerify, request: Request, response: Response):
     """Verify an OTP code and return a JWT access token."""
     email = body.email.lower().strip()
     code = body.code.strip()
@@ -208,6 +214,20 @@ async def verify_otp(body: OTPVerify):
     # Generate JWT
     token = create_jwt_token(user.id, user.email)
 
+    # КАО#SG1-selfxss — also deliver the JWT in an httpOnly cookie so page-level
+    # XSS (e.g. a same-origin preview tab opened from generated code) cannot
+    # read it from localStorage. The body still carries access_token for
+    # API/CLI clients and to keep the response contract unchanged.
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=get_settings().jwt_expiry_minutes * 60,
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure_flag(request),
+        path="/",
+    )
+
     return TokenResponse(
         access_token=token,
         user={
@@ -249,6 +269,24 @@ async def get_current_user(auth: dict | None = Depends(require_auth)):
         created_at=user.created_at,
         last_login_at=user.last_login_at,
     )
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response):
+    """КАО#SG1-selfxss — clear the httpOnly session cookie.
+
+    Public on purpose: logout must succeed even when the current session
+    cookie is already expired/invalid. The delete attributes (path, samesite,
+    secure) must mirror the ones used in ``set_cookie`` or the browser leaves
+    a zombie cookie behind.
+    """
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        secure=cookie_secure_flag(request),
+    )
+    return {"message": "Logged out"}
 
 
 class AccessRequest(BaseModel):

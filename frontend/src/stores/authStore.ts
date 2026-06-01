@@ -1,86 +1,97 @@
 import { create } from 'zustand'
 import {
-  getStoredToken,
-  setStoredToken,
-  clearStoredToken,
+  clearLegacyToken,
+  setAuthedHint,
+  getAuthedHint,
+  clearAuthedHint,
   getCurrentUser,
   probeCurrentUserForDevMode,
+  logoutApi,
   type AuthUser,
 } from '../services/api'
 
+// КАО#SG1-selfxss — the JWT now lives in an httpOnly `codeforge_session`
+// cookie, not in localStorage. The store therefore never holds the raw token;
+// it only tracks the in-memory user + a non-sensitive "we think we're logged
+// in" hint flag (see services/api.ts) used to decide whether to validate the
+// session on startup.
 interface AuthState {
-  /** JWT token (null if not authenticated) */
-  token: string | null
-  /** Current user info */
+  /** Current user info (null if not authenticated) */
   user: AuthUser | null
-  /** True when we have a valid token + user */
+  /** True when we have a valid session */
   isAuthenticated: boolean
   /** True during initial auth check */
   loading: boolean
   /** True if auth check determined auth is not required (dev mode) */
   authDisabled: boolean
 
-  /** Called on app startup to restore session from localStorage */
+  /** Called on app startup to restore the session (httpOnly cookie + hint) */
   loadFromStorage: () => Promise<void>
-  /** Called after successful OTP verification */
-  login: (token: string, user: AuthUser) => void
-  /** Clear session and redirect to login */
+  /** Called after successful OTP verification (the JWT is in the cookie) */
+  login: (user: AuthUser) => void
+  /** Clear session (server-side cookie + local state); the UI then redirects */
   logout: () => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  token: null,
   user: null,
   isAuthenticated: false,
   loading: true,
   authDisabled: false,
 
   loadFromStorage: async () => {
-    const token = getStoredToken()
-    if (!token) {
-      // КАО#SR-4 Round 4 — Probe /me only when running on localhost (dev mode
-      // detection). On stage/prod we skip the probe to avoid a guaranteed 401
-      // and its associated console.error noise on the anonymous /login page.
-      const user = await probeCurrentUserForDevMode()
-      if (user && user.id === 'dev') {
-        // Dev mode — auth not required
+    // КАО#SG1-selfxss — purge any legacy JWT older builds left in localStorage
+    // so a same-origin XSS can't read it. The httpOnly cookie replaces it.
+    clearLegacyToken()
+
+    if (getAuthedHint()) {
+      // We believe a session exists — validate it. The httpOnly cookie is sent
+      // automatically; getCurrentUser() throws on 401 (expired/absent session).
+      try {
+        const user = await getCurrentUser()
+        setAuthedHint()
         set({
-          token: null,
-          user: { id: 'dev', email: 'dev@localhost', is_active: true },
+          user: { id: user.id, email: user.email, is_active: user.is_active },
           isAuthenticated: true,
           loading: false,
-          authDisabled: true,
+          authDisabled: user.id === 'dev',
         })
-        return
+      } catch {
+        // Session expired or invalid — self-heal back to logged-out.
+        clearAuthedHint()
+        set({ user: null, isAuthenticated: false, loading: false })
       }
-      set({ loading: false })
       return
     }
 
-    // Token exists — validate it
-    try {
-      const user = await getCurrentUser()
+    // No hint: only probe /me for dev-mode on localhost (КАО#SR-4). On
+    // stage/prod we skip the probe to avoid a guaranteed 401 + console noise on
+    // the anonymous /login page.
+    const user = await probeCurrentUserForDevMode()
+    if (user && user.id === 'dev') {
       set({
-        token,
-        user: { id: user.id, email: user.email, is_active: user.is_active },
+        user: { id: 'dev', email: 'dev@localhost', is_active: true },
         isAuthenticated: true,
         loading: false,
-        authDisabled: user.id === 'dev',
+        authDisabled: true,
       })
-    } catch {
-      // Token expired or invalid
-      clearStoredToken()
-      set({ token: null, user: null, isAuthenticated: false, loading: false })
+      return
     }
+    set({ loading: false })
   },
 
-  login: (token: string, user: AuthUser) => {
-    setStoredToken(token)
-    set({ token, user, isAuthenticated: true, loading: false })
+  login: (user: AuthUser) => {
+    // The JWT was already set as an httpOnly cookie by verify-otp; we only
+    // record the non-sensitive hint + the in-memory user.
+    setAuthedHint()
+    set({ user, isAuthenticated: true, loading: false })
   },
 
   logout: () => {
-    clearStoredToken()
-    set({ token: null, user: null, isAuthenticated: false })
+    // Best-effort server-side cookie clear; local state resets regardless so
+    // the UI redirects to /login immediately.
+    void logoutApi().catch(() => {})
+    clearAuthedHint()
+    set({ user: null, isAuthenticated: false })
   },
 }))

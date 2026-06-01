@@ -1,91 +1,76 @@
-// КАО Security writers — General sanity: token storage hygiene.
+// КАО#SG1-selfxss — token storage hygiene (post httpOnly-cookie migration).
 //
-// Asserts:
-//   • setStoredToken / getStoredToken roundtrip via localStorage only — token
-//     is NOT mirrored into cookies (where it could be sent cross-site).
-//   • clearStoredToken removes the value so it's not recoverable.
-//   • The auth-token key name has not silently changed (would break logout
-//     across all open tabs).
-//   • The token, once stored, is NOT leaked into document.title, location.href,
-//     or document.cookie by any of the api helpers.
+// The JWT now lives in an httpOnly `codeforge_session` cookie set by the
+// backend — JavaScript CANNOT read it, so a same-origin XSS (e.g. a preview
+// tab opened from generated code) can no longer exfiltrate it. This file
+// asserts the INVERTED invariant of the old localStorage-token model:
 //
-// КАО general-sanity
+//   • The auth helpers never write a JWT to localStorage — only a NON-sensitive
+//     hint flag ('codeforge_authed' = '1'). Reading or forging the flag grants
+//     no access; only the httpOnly cookie does.
+//   • clearLegacyToken() purges any JWT older builds left under the legacy
+//     'codeforge_token' key (defence-in-depth migration of existing clients).
+//   • The auth helpers never leak a session into document.cookie /
+//     document.title / location.href.
+//
+// КАО#SG1-selfxss КАО general-sanity
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
-  clearStoredToken,
-  getStoredToken,
-  setStoredToken,
+  clearAuthedHint,
+  clearLegacyToken,
+  getAuthedHint,
+  setAuthedHint,
 } from '../../services/api'
 
+const LEGACY_KEY = 'codeforge_token'
+const HINT_KEY = 'codeforge_authed'
+
 beforeEach(() => {
-  clearStoredToken()
-  document.cookie = ''
+  localStorage.clear()
   document.title = ''
 })
 
 afterEach(() => {
-  clearStoredToken()
+  localStorage.clear()
 })
 
-describe('token storage hygiene', () => {
-  it('roundtrips via localStorage and only localStorage', () => {
-    setStoredToken('jwt-abc-123')
-    expect(getStoredToken()).toBe('jwt-abc-123')
-
-    // Confirm value is in localStorage under a stable key.
-    // We don't hardcode the exact key here — instead we scan localStorage
-    // for a value matching the token. If there's no match, the storage
-    // mechanism changed silently and we want to know.
-    let foundInLS = false
+describe('token storage hygiene (httpOnly cookie model)', () => {
+  it('the auth hint is just a flag — never a JWT', () => {
+    setAuthedHint()
+    expect(getAuthedHint()).toBe(true)
+    // The stored value is the literal '1', not a token.
+    expect(localStorage.getItem(HINT_KEY)).toBe('1')
+    // Scan ALL of localStorage: nothing JWT-shaped (base64url "eyJ…") present.
     for (let i = 0; i < localStorage.length; i += 1) {
       const k = localStorage.key(i) as string
-      if (localStorage.getItem(k) === 'jwt-abc-123') {
-        foundInLS = true
-        // Defensive: ensure it's stored under a sensibly-named key.
-        expect(k.toLowerCase()).toMatch(/token|auth|jwt|codeforge/)
-        break
-      }
+      const v = localStorage.getItem(k) || ''
+      expect(v).not.toMatch(/^eyJ/)
     }
-    expect(foundInLS, 'token must be in localStorage').toBe(true)
-
-    // NOT in cookies.
-    expect(document.cookie).not.toContain('jwt-abc-123')
   })
 
-  it('clearStoredToken empties the slot', () => {
-    setStoredToken('to-be-deleted')
-    expect(getStoredToken()).toBe('to-be-deleted')
-    clearStoredToken()
-    expect(getStoredToken()).toBeNull()
+  it('clearAuthedHint removes the flag', () => {
+    setAuthedHint()
+    expect(getAuthedHint()).toBe(true)
+    clearAuthedHint()
+    expect(getAuthedHint()).toBe(false)
+    expect(localStorage.getItem(HINT_KEY)).toBeNull()
   })
 
-  it('does not mirror token into document.title / cookie / location on read', () => {
-    setStoredToken('eyJSECRET.payload.signature')
-    // Read the token a few times in different ways.
-    const t = getStoredToken()
-    expect(t).toBe('eyJSECRET.payload.signature')
-
-    // No browser-side leak vectors.
-    expect(document.title).not.toContain('eyJSECRET')
-    expect(document.cookie).not.toContain('eyJSECRET')
-    expect(window.location.href).not.toContain('eyJSECRET')
+  it('clearLegacyToken purges a JWT left under the legacy key', () => {
+    // Simulate an old build that stored the JWT in localStorage.
+    localStorage.setItem(LEGACY_KEY, 'eyJhbGciOi.PAYLOAD.sig')
+    clearLegacyToken()
+    expect(localStorage.getItem(LEGACY_KEY)).toBeNull()
   })
 
-  it('storage key name is stable (regression: do NOT silently rename it)', () => {
-    setStoredToken('stable-key-probe')
-    // Grab the key the helper used; assert it matches the public contract
-    // (CodeForge stores under 'codeforge_token' — if anyone changes this,
-    // every open browser tab logs out, which is a UX-breaking change that
-    // must be done deliberately, not as a refactor side-effect).
-    let storedUnder: string | null = null
-    for (let i = 0; i < localStorage.length; i += 1) {
-      const k = localStorage.key(i) as string
-      if (localStorage.getItem(k) === 'stable-key-probe') {
-        storedUnder = k
-        break
-      }
-    }
-    expect(storedUnder).toBe('codeforge_token')
+  it('auth helpers never leak a session into cookie / title / location', () => {
+    setAuthedHint()
+    // The httpOnly session cookie is set by the SERVER and is not JS-readable;
+    // the client must never write it (or any JWT) to document.cookie.
+    expect(document.cookie).not.toContain('codeforge_session')
+    expect(document.cookie).not.toMatch(/eyJ/)
+    expect(document.title).not.toMatch(/eyJ/)
+    expect(window.location.href).not.toMatch(/eyJ/)
   })
 })
