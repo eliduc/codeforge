@@ -2480,7 +2480,8 @@ export default function SessionDetailPage() {
           // working/done coder node.
           if (!e.ctrlKey && !e.metaKey) {
             if (finalResult) {
-              setShowCode(true)
+              // КАО#R2-07 — single-panel invariant (matches the header button).
+              switchToPanel('code'); pushPanel('code')
             } else {
               // Find the highest-numbered coder node that's done or working
               const candidate = [...nodes]
@@ -2501,7 +2502,7 @@ export default function SessionDetailPage() {
         case 'i':
           // Улучшатели#3 wave 2 #7 — open the intervention panel.
           if (!e.ctrlKey && !e.metaKey) {
-            setShowIntervention(true)
+            switchToPanel('intervention')  // КАО#R2-07 — single-panel invariant
             // КАО#W4-FIX-03 — match the header Intervene button (line ~4517)
             // so the side-panel breadcrumb (Wave 3 P2·M) records keyboard
             // openings too. Without this the breadcrumb only tracked
@@ -4907,9 +4908,12 @@ export default function SessionDetailPage() {
                 </button>
                 <button
                   onClick={() => {
-                    const next = !showCode
-                    setShowCode(next)
-                    if (next) pushPanel('code')
+                    // КАО#R2-07 — route OPEN through switchToPanel so only one
+                    // side panel is open at a time (every other entry point +
+                    // the DetailPanel guard assume this). Previously View Result
+                    // + Intervene could both be open and squeeze the graph to ~0.
+                    if (showCode) setShowCode(false)
+                    else { switchToPanel('code'); pushPanel('code') }
                   }}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
                     showCode
@@ -5120,9 +5124,9 @@ export default function SessionDetailPage() {
             {/* === Group D: communication === */}
             <button
               onClick={() => {
-                const next = !showIntervention
-                setShowIntervention(next)
-                if (next) pushPanel('intervention')
+                // КАО#R2-07 — single-panel invariant (see View Result above).
+                if (showIntervention) setShowIntervention(false)
+                else { switchToPanel('intervention'); pushPanel('intervention') }
               }}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
                 showIntervention
@@ -5286,7 +5290,10 @@ export default function SessionDetailPage() {
           status={session.status}
           busy={enhancementLoading || actionLoading}
           onViewResult={() => {
-            setShowCode(true)
+            // КАО#R2-07b — fifth entry point found by re-verify: route through
+            // switchToPanel like the header button so the single-panel
+            // invariant holds from the completion banner too.
+            switchToPanel('code')
             pushPanel('code')
           }}
           onReview={handleOpenReview}
@@ -5368,7 +5375,10 @@ export default function SessionDetailPage() {
                 spec-node clicks. Move the panel to top-right where the Spec
                 node never sits. Keep pointer-events-none on the wrapper as
                 a safety net for any other top-corner overlap. */}
-            <Panel position="top-right" className="pointer-events-none">
+            {/* КАО#R2-06 — when the WSStatusPill (also top-right, top-3 right-3)
+                is visible it overlaps this panel's "Session Metrics" header. Nudge
+                the panel down for the transient WS-disruption window only. */}
+            <Panel position="top-right" className={`pointer-events-none transition-transform duration-200 ${(wsState.status !== 'connected' || wsRecentlyRecovered) ? 'translate-y-12' : ''}`}>
               <MetricsPanel
                 iteration={Math.max(workflowState.iteration ?? 0, session.current_iteration ?? 0) || 1}
                 maxIterations={session.max_iterations}

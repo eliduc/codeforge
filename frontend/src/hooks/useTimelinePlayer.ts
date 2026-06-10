@@ -228,6 +228,18 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
   const cameraSeqRef = useRef(0)
   // Chapter pause state
   const [currentChapterIdx, setCurrentChapterIdx] = useState<number>(-1)
+  // КАО#R2-05 — mirror into a ref so the rAF tick reads the LIVE chapter index.
+  // The rAF effect deps don't include currentChapterIdx, so a restart() while
+  // already playing (setPlaying(true) is a no-op → the effect does not
+  // re-subscribe) would otherwise leave the tick closure with a stale index and
+  // soft-lock the player (chapter 0 gets staged instead of shown → null
+  // currentChapter → no Tour plaque, no Continue button). Route EVERY
+  // chapter-index update through setChapterIdx so the ref stays in lock-step.
+  const currentChapterIdxRef = useRef<number>(-1)
+  const setChapterIdx = useCallback((idx: number) => {
+    currentChapterIdxRef.current = idx
+    setCurrentChapterIdx(idx)
+  }, [])
   const [pausedForChapter, setPausedForChapter] = useState<boolean>(false)
   /** When paused at a chapter boundary, the next chapter (the one we're ABOUT
    *  to switch to once the user clicks Continue) is held here. The plaque
@@ -263,7 +275,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
     setInteractivePauseKey(null)
     setCameraFocus(null)
     cameraSeqRef.current = 0
-    setCurrentChapterIdx(-1)
+    setChapterIdx(-1)
     setPausedForChapter(false)
     stagedNextChapterIdxRef.current = null
     acknowledgedChaptersRef.current = new Set()
@@ -355,7 +367,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
         setFinished(false)
         // Forget chapter acknowledgements so they re-pause on the way back.
         acknowledgedChaptersRef.current = new Set()
-        setCurrentChapterIdx(-1)
+        setChapterIdx(-1)
         setPausedForChapter(false)
         stagedNextChapterIdxRef.current = null
         setInteractivePauseKey(null)
@@ -388,13 +400,13 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
         if (landedIdx < 0) {
           // Clock is BEFORE all chapter boundaries — reset to idle state.
           // Covered cases: seek to t=0, seek to t=10 (before any chapter).
-          setCurrentChapterIdx(-1)
+          setChapterIdx(-1)
           setPausedForChapter(false)
           stagedNextChapterIdxRef.current = null
         } else {
           // Clock is inside chapter landedIdx's range, or past the last
           // chapter's t_start. Activate the landed chapter.
-          setCurrentChapterIdx(landedIdx)
+          setChapterIdx(landedIdx)
           stagedNextChapterIdxRef.current = null
           const landed = chapters[landedIdx]
           if (seekingBack) {
@@ -459,7 +471,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
           if (c.t_start <= target && c.t_start > clockRef.current) {
             // Special case: very first chapter — show its plaque immediately
             // (no "previous chapter" to leave on screen).
-            const isFirstChapter = i === 0 && currentChapterIdx < 0
+            const isFirstChapter = i === 0 && currentChapterIdxRef.current < 0
             // Dispatch only events strictly BEFORE the chapter boundary.
             while (
               nextEventIdxRef.current < tl.events.length &&
@@ -473,7 +485,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
             if (acknowledgedChaptersRef.current.has(c.id)) {
               // Already acknowledged (e.g. after a manual seek). Activate
               // chapter and dispatch its boundary events, keep playing.
-              setCurrentChapterIdx(i)
+              setChapterIdx(i)
               while (
                 nextEventIdxRef.current < tl.events.length &&
                 tl.events[nextEventIdxRef.current].t <= c.t_start
@@ -485,7 +497,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
             }
             if (isFirstChapter) {
               // First chapter: switch immediately, then pause.
-              setCurrentChapterIdx(0)
+              setChapterIdx(0)
             } else {
               // Subsequent chapter: stage it. The plaque keeps showing the
               // previous chapter until continueChapter() applies the switch.
@@ -602,7 +614,7 @@ export function useTimelinePlayer({ timeline, autoPlay = true }: UseTimelinePlay
     // Atomic chapter switch: update the plaque AND fire the chapter's
     // boundary events (phase_started, camera_focus, agent_started at t == next.t_start)
     // in the same React commit.
-    setCurrentChapterIdx(nextIdx)
+    setChapterIdx(nextIdx)
     while (
       nextEventIdxRef.current < tl.events.length &&
       tl.events[nextEventIdxRef.current].t <= next.t_start

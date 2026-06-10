@@ -58,6 +58,7 @@ window.addEventListener('message', function(event) {
     // Create child iframe with srcdoc — it inherits this page's permissive CSP
     var frame = document.createElement('iframe');
     frame.id = '__preview-frame';
+    frame.title = 'CodeForge preview';  // КАО#R2-08 — accessible name (WCAG 4.1.2)
     frame.style.cssText = 'width:100%;height:100vh;border:none;';
     frame.srcdoc = html;
     document.body.appendChild(frame);

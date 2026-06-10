@@ -89,8 +89,16 @@ function StyledToastContent({ t, type, message, title, action }: StyledToastProp
   const displayTitle = title || typeLabels[type]
 
   // Улучшатели#5 P1·M — cf-* tokens for theme-aware surface (was gray-800/gray-900).
+  // КАО#R2-01 — react-hot-toast only spreads ariaProps onto its built-in ToastBar;
+  // toast.custom() nodes render verbatim, so the toast was announced to nobody
+  // (WCAG 4.1.3). Add live-region semantics here: errors interrupt (assertive/alert),
+  // everything else is polite (status).
+  const isError = type === 'error'
   return (
     <div
+      role={isError ? 'alert' : 'status'}
+      aria-live={isError ? 'assertive' : 'polite'}
+      aria-atomic="true"
       className={`
         ${t.visible ? 'animate-toast-enter' : 'animate-toast-leave'}
         max-w-sm w-full pointer-events-auto

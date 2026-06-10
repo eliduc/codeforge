@@ -92,7 +92,10 @@ class _ScreenshotResponse(BaseModel):
 
 
 class _ScoreResponse(BaseModel):
-    score: int
+    # КАО#R2-02 — column is Numeric(3,1) (VR-27 half-steps) → SQLAlchemy yields
+    # Decimal('7.5'); an int field rejects fractional values and FastAPI turns the
+    # response_model ValidationError into a 500. Must be float to match _ScoreItem.
+    score: float
     source: str
     submitted_by: str | None = None
 

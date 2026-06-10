@@ -804,11 +804,37 @@ class WorkflowOrchestrator:
             return False
 
         try:
+            # КАО#R2-04 — wire on_resume so the 24h auto-finalize timer AND the
+            # 1h vision auto-resume actually advance the session. Previously the
+            # orchestrator omitted it (→ None), so both timers fired but never
+            # finalized — sessions sat in AWAITING_VISUAL_REVIEW forever unless a
+            # user manually submitted/skipped. This mirrors the API route
+            # handlers' handoff, but with a FRESH db session because the
+            # request-scoped one is long closed when those background timers fire.
+            async def _vr_on_resume(sid: str, reason: str) -> None:
+                from app.db import AsyncSessionLocal
+                from app.services.visual_review import resume_after_visual_review
+                from app.api.websocket.manager import session_manager
+                try:
+                    async with AsyncSessionLocal() as fresh_db:
+                        await resume_after_visual_review(
+                            db=fresh_db,
+                            session_id=sid,
+                            reason=reason,
+                            event_callback=session_manager.broadcast,
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"visual-review auto-resume ({reason}) failed for {sid}: {e}",
+                        exc_info=True,
+                    )
+
             ok = await enter_awaiting_visual_review(
                 db=self.db,
                 session_id=self._session_id,
                 language=self.session.language,
                 event_callback=self.event_callback,
+                on_resume=_vr_on_resume,
             )
             return ok
         except Exception as e:

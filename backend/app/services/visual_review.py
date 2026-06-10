@@ -458,7 +458,7 @@ class VisualReviewDecision:
     per_candidate_vision_avg: dict[str, float]
 
 
-def _avg(values: list[int]) -> float:
+def _avg(values: list[float]) -> float:  # КАО#R2-03 — half-step (float) scores
     return (sum(values) / len(values)) if values else 0.0
 
 
@@ -482,14 +482,17 @@ async def aggregate_visual_review_scores(
     rows = (await db.execute(stmt)).scalars().all()
 
     # Group by source then by code_version_id.
-    user_scores: dict[str, list[int]] = {}
-    vision_scores: dict[str, list[int]] = {}
+    # КАО#R2-03 — row.score is Numeric(3,1) → Decimal; int() truncated the 0.5
+    # precision (VR-27) in the decisive winner-selection average (7.5 & 7.0 both
+    # collapsed to 7 → spurious tie). Keep it float.
+    user_scores: dict[str, list[float]] = {}
+    vision_scores: dict[str, list[float]] = {}
     for row in rows:
         cv_id = str(row.code_version_id)
         if row.source == "user":
-            user_scores.setdefault(cv_id, []).append(int(row.score))
+            user_scores.setdefault(cv_id, []).append(float(row.score))
         elif row.source == "vision_llm":
-            vision_scores.setdefault(cv_id, []).append(int(row.score))
+            vision_scores.setdefault(cv_id, []).append(float(row.score))
         else:
             logger.debug(f"Ignoring unknown VisualReviewScore source: {row.source!r}")
 

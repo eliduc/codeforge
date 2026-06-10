@@ -140,8 +140,11 @@ async def lifespan(app: FastAPI):
     #     calls on boot;
     #   * PAUSED sessions are LEFT paused (the user paused them on purpose; they
     #     resume via /resume) — no longer auto-failed;
-    #   * AWAITING_VISUAL_REVIEW is untouched (its auto-finalize timer is
-    #     re-armed by the visual_review startup hook).
+    #   * AWAITING_VISUAL_REVIEW is left untouched on boot. КАО#R2-04 wires the
+    #     in-process 24h auto-finalize + 1h vision auto-resume timers so they fire
+    #     for sessions that entered review during THIS process's lifetime; a user
+    #     submit/skip always advances it. Re-arming those timers across a restart
+    #     is NOT yet implemented (tracked separately as VR-21).
     try:
         import asyncio
         from app.db import AsyncSessionLocal

@@ -56,6 +56,7 @@ function render(html) {
 
   var frame = document.createElement('iframe');
   frame.id = '__preview-frame';
+  frame.title = 'CodeForge preview';  // КАО#R2-08 — accessible name (WCAG 4.1.2)
   // SECURITY: deliberately NO 'allow-same-origin'. The generated HTML runs in
   // an opaque origin and cannot read this page's / the app's storage, cookies,
   // or call the app's same-origin API.

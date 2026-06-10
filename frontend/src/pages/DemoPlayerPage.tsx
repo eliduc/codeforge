@@ -2089,8 +2089,13 @@ function WhatNextCta({
   return (
     <div
       className="absolute top-16 left-1/2 -translate-x-1/2 z-30 w-[min(34rem,calc(100vw-340px))] pointer-events-auto"
-      role="dialog"
-      aria-label="What next"
+      // КАО#R2-11 — this is a passive, non-modal overlay (no focus trap, no
+      // Escape, focus is not moved into it). role="dialog" misled screen readers
+      // ("a dialog opened" but focus never follows). Announce it as a polite
+      // region instead, which matches its actual behaviour.
+      role="region"
+      aria-label="Demo complete — what next"
+      aria-live="polite"
     >
       <div className="rounded-xl border-2 border-emerald-400/50 bg-gray-900/95 backdrop-blur-md shadow-2xl px-4 py-3 relative">
         <button
