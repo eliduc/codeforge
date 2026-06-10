@@ -362,7 +362,7 @@ async def test_finalize_coder_result_success_with_execution():
         stdout="hi\n", stderr="", exit_code=0, timeout_exceeded=False,
         to_dict=lambda: {"stdout": "hi\n", "stderr": "", "exit_code": 0},
     )
-    orch._execute_and_fix_code.return_value = ("print('hi')", exec_result)
+    orch._execute_and_fix_code.return_value = ("print('hi')", exec_result, 1)  # КАО#R3-M11 — VR-47 3-tuple
 
     await orch._finalize_coder_result(
         coder, _make_agent_result(success=True), snap, agent_timeout=10
@@ -419,7 +419,7 @@ async def test_finalize_coder_result_tdd_mismatch_recorded():
         timeout_exceeded=False,
         to_dict=lambda: {"stdout": "actual output", "stderr": "", "exit_code": 0},
     )
-    orch._execute_and_fix_code.return_value = ("print('something else')", exec_result)
+    orch._execute_and_fix_code.return_value = ("print('something else')", exec_result, 1)  # КАО#R3-M11 — VR-47 3-tuple
 
     await orch._finalize_coder_result(
         coder, _make_agent_result(success=True), snap, agent_timeout=10
@@ -451,7 +451,7 @@ async def test_finalize_coder_result_tdd_no_mismatch_when_match():
         timeout_exceeded=False,
         to_dict=lambda: {"stdout": "hello world\n", "stderr": "", "exit_code": 0},
     )
-    orch._execute_and_fix_code.return_value = ("print('hello world')", exec_result)
+    orch._execute_and_fix_code.return_value = ("print('hello world')", exec_result, 1)  # КАО#R3-M11 — VR-47 3-tuple
 
     await orch._finalize_coder_result(
         coder, _make_agent_result(success=True), snap, agent_timeout=10

@@ -143,7 +143,7 @@ function CodeViewerModal({
               <Download className="w-4 h-4" />
               Download
             </button>
-            <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
+            <button onClick={onClose} aria-label="Close" className="p-2 hover:bg-gray-700 rounded-lg">
               <X className="w-5 h-5 text-gray-300" />
             </button>
           </div>
@@ -220,7 +220,7 @@ function AuditViewerModal({
               <Download className="w-4 h-4" />
               Download
             </button>
-            <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
+            <button onClick={onClose} aria-label="Close" className="p-2 hover:bg-gray-700 rounded-lg">
               <X className="w-5 h-5 text-gray-300" />
             </button>
           </div>
@@ -275,11 +275,13 @@ function DiffViewerModal({
             Compare Versions
           </h3>
           <div className="flex items-center gap-2">
-            <div className="flex bg-gray-700 rounded-lg p-0.5">
+            {/* КАО#R3-M5 — segmented control: announce active state (was color-only) */}
+            <div className="flex bg-gray-700 rounded-lg p-0.5" role="group" aria-label="Diff view mode">
               {(['side-by-side', 'previous', 'current'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
+                  aria-pressed={activeTab === tab}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                     activeTab === tab
                       ? 'bg-indigo-600 text-white'
@@ -290,7 +292,7 @@ function DiffViewerModal({
                 </button>
               ))}
             </div>
-            <button onClick={onClose} className="p-2 hover:bg-gray-700 rounded-lg">
+            <button onClick={onClose} aria-label="Close" className="p-2 hover:bg-gray-700 rounded-lg">
               <X className="w-5 h-5 text-gray-300" />
             </button>
           </div>
@@ -1842,6 +1844,7 @@ export default function DetailPanel({
         </div>
         <button
           onClick={onClose}
+          aria-label="Close"
           className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
         >
           <X className="w-5 h-5 text-gray-300" />

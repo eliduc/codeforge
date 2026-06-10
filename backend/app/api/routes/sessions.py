@@ -2083,17 +2083,31 @@ async def cancel_session(
     # Signal cancellation -- also wakes up a paused orchestrator
     await session_manager.cancel_session(str(session_id))
 
-    # #6 CAS guard: atomically set CANCELLED only from RUNNING or PAUSED
+    # #6 CAS guard: atomically set CANCELLED only from valid source states.
+    # КАО#R3-M10 — also allow AWAITING_VISUAL_REVIEW (previously it could NOT be
+    # cancelled and its 24h/1h timers stayed armed → a later auto-resume).
     cas_stmt = (
         update(Session)
         .where(Session.id == session_id)
-        .where(Session.status.in_([SessionStatus.RUNNING, SessionStatus.PAUSED]))
+        .where(Session.status.in_([
+            SessionStatus.RUNNING,
+            SessionStatus.PAUSED,
+            SessionStatus.AWAITING_VISUAL_REVIEW,
+        ]))
         .values(status=SessionStatus.CANCELLED)
     )
     cas_result = await db.execute(cas_stmt)
     await db.commit()
     if cas_result.rowcount == 0:
         raise HTTPException(status_code=409, detail="Session cannot be cancelled in its current state")
+
+    # КАО#R3-M10 — disarm any armed visual-review timers so the cancelled session
+    # is not auto-resumed/finalized later. Idempotent; no-op if none armed.
+    try:
+        from app.services.visual_review import cancel_timeout
+        await cancel_timeout(str(session_id))
+    except Exception:
+        pass
 
     # Re-query to get fresh data with relationships
     stmt = select(Session).where(Session.id == session_id).options(

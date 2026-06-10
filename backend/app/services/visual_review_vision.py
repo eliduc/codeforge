@@ -370,6 +370,9 @@ async def rank_with_vision_llm(
 
     from sqlalchemy import func as sa_func
 
+    # NOTE: КАО#R3-M6 (rank per-coder-max instead of global-max iteration) was
+    # deferred — it requires rewriting the scripted query mocks in
+    # tests/test_visual_review_vision.py. Tracked as a separate task.
     max_iter = (
         await db.execute(
             select(sa_func.max(CodeVersion.iteration))

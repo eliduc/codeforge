@@ -24,6 +24,7 @@ function humanizeStatus(status: string): string {
     awaiting_enhancement: 'Awaiting Enhancement',
     enhancing: 'Enhancing…',
     awaiting_enhancement_review: 'Enhancement Review',
+    awaiting_visual_review: 'Visual Review',  // КАО#R3-01
     created: 'Created',
     running: 'Running',
     paused: 'Paused',
@@ -93,7 +94,7 @@ export default function MetricsPanel({
           ${status === 'paused' ? 'bg-yellow-500/20 text-yellow-400' : ''}
           ${status === 'created' ? 'bg-gray-500/20 text-gray-300' : ''}
           ${status === 'enhancing' ? 'bg-purple-500/20 text-purple-300 animate-pulse' : ''}
-          ${status === 'awaiting_enhancement' || status === 'awaiting_enhancement_review' ? 'bg-amber-500/20 text-amber-300' : ''}
+          ${status === 'awaiting_enhancement' || status === 'awaiting_enhancement_review' || status === 'awaiting_visual_review' ? 'bg-amber-500/20 text-amber-300' : ''}
         `}>
           {humanizeStatus(status)}
         </span>

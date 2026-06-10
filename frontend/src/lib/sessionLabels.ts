@@ -13,6 +13,7 @@ const LABELS: Record<string, string> = {
   awaiting_enhancement: 'Awaiting Enhancement',
   enhancing: 'Enhancing…',
   awaiting_enhancement_review: 'Enhancement Review',
+  awaiting_visual_review: 'Visual Review',  // КАО#R3-01
 }
 
 /** Humanize a raw session-status enum value. Falls back to the raw string. */

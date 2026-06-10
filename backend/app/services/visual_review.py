@@ -667,7 +667,7 @@ async def resume_after_visual_review(
     # 4. Cancel the 24h timer (idempotent — submit/skip routes also call this).
     await cancel_timeout(session_id)
 
-    if reason not in {"submitted", "skipped", "timeout"}:
+    if reason not in {"submitted", "skipped", "timeout", "vision_llm_auto"}:  # КАО#R3-sugS3
         logger.warning(f"resume_after_visual_review: unknown reason {reason!r}")
 
     logger.info(

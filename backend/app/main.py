@@ -148,7 +148,7 @@ async def lifespan(app: FastAPI):
     try:
         import asyncio
         from app.db import AsyncSessionLocal
-        from app.db.models import Session as SessionModel, SessionStatus, OTPCode
+        from app.db.models import Session as SessionModel, SessionStatus, OTPCode, FinalResult
         from sqlalchemy import select, update, delete
         from datetime import datetime, timezone, timedelta
 
@@ -162,14 +162,33 @@ async def lifespan(app: FastAPI):
             # orchestrator); resuming it via orchestrator.run() would re-run the
             # whole coder→tester→finalizer pipeline and overwrite the existing
             # FinalResult. So auto-resume RUNNING only…
+            # КАО#R3-S4 — a RUNNING session that ALREADY has a FinalResult is a
+            # finalization-only / re-finalize pass (visual-review resume, the 24h
+            # auto-resume КАО#R2-04, or /re-finalize), NOT a mid-pipeline run.
+            # Re-launching orchestrator.run() would re-execute the full
+            # coder→tester pipeline and OVERWRITE the FinalResult + discard the
+            # visual-review user scores. Exclude them from full-pipeline resume…
             recent = await db.execute(
                 select(SessionModel.id)
                 .where(SessionModel.status == SessionStatus.RUNNING)
                 .where(SessionModel.updated_at >= cutoff)
+                .where(~SessionModel.id.in_(select(FinalResult.session_id)))
                 .order_by(SessionModel.updated_at.desc())
                 .limit(RESUME_CAP)
             )
             resume_ids = list(recent.scalars().all())
+            # …and reset those finalized-but-RUNNING sessions to COMPLETED
+            # (FinalResult + scores preserved; user can re-trigger), mirroring the
+            # ENHANCING handling (КАО#R1-03).
+            fin_reset = await db.execute(
+                update(SessionModel)
+                .where(SessionModel.status == SessionStatus.RUNNING)
+                .where(SessionModel.updated_at >= cutoff)
+                .where(SessionModel.id.in_(select(FinalResult.session_id)))
+                .values(status=SessionStatus.COMPLETED)
+                .returning(SessionModel.id)
+            )
+            fin_reset_ids = list(fin_reset.scalars().all())
             # …and reset recent interrupted ENHANCING sessions back to COMPLETED
             # (FinalResult is preserved; the user can re-trigger /enhance).
             enh_reset = await db.execute(
@@ -203,6 +222,8 @@ async def lifespan(app: FastAPI):
             logger.warning(f"VR-21 — auto-resuming {len(resume_ids)} interrupted sessions: {resume_ids}")
         if enh_reset_ids:
             logger.warning(f"КАО#R1-03 — reset {len(enh_reset_ids)} interrupted ENHANCING sessions to COMPLETED: {enh_reset_ids}")
+        if fin_reset_ids:
+            logger.warning(f"КАО#R3-S4 — reset {len(fin_reset_ids)} finalization-only RUNNING sessions (had FinalResult) to COMPLETED instead of re-running the full pipeline: {fin_reset_ids}")
         if stale_ids:
             logger.warning(f"Reset {len(stale_ids)} stale zombie sessions to FAILED: {stale_ids}")
         if expired.rowcount:

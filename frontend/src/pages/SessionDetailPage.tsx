@@ -6640,7 +6640,7 @@ export default function SessionDetailPage() {
       {/* Session Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-2xl w-[520px] max-h-[80vh] overflow-y-auto">
+          <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-2xl w-full max-w-[520px] mx-4 max-h-[80vh] overflow-y-auto">{/* КАО#R3-M3 responsive */}
             <div className="flex items-center justify-between p-5 border-b border-gray-700">
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Settings className="w-5 h-5 text-indigo-400" />

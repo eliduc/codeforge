@@ -745,8 +745,8 @@ export default function DemoPlayerPage() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 px-4 pt-2 border-b border-gray-800 bg-gray-900">
+      {/* Tabs — КАО#R3-M4: tablist/tab semantics */}
+      <div className="flex items-center gap-1 px-4 pt-2 border-b border-gray-800 bg-gray-900" role="tablist" aria-label="Demo view">
         {/* Улучшатели#3 P1·M — handleTabChange dismisses the post-demo CTA. */}
         <TabButton active={tab === 'graph'} onClick={() => handleTabChange('graph')} icon={<Network className="w-4 h-4" />}>
           Live graph
@@ -797,7 +797,7 @@ export default function DemoPlayerPage() {
                 appears over the graph instead of "under" the plaque. */}
           </aside>
         )}
-      <div className="flex-1 relative min-h-0 overflow-hidden">
+      <div className="flex-1 relative min-h-0 overflow-hidden" role="tabpanel" aria-label={tab === 'graph' ? 'Live graph' : 'Final result'}>
         {tab === 'graph' ? (
           <ReactFlowProvider>
             <ReactFlow
@@ -911,7 +911,7 @@ export default function DemoPlayerPage() {
             {/* Legacy auto-plaque only when no chapters defined.
                 (The chapter banner above the graph handles the chapter case.) */}
             {(!timeline.narration_chapters || timeline.narration_chapters.length === 0) && (
-              <StatusPlaque timeline={timeline} state={state} />
+              <StatusPlaque timeline={timeline} state={state} isMobile={isMobile} />
             )}
 
             {/* Interactive pause: when the timeline triggers a pause point,
@@ -939,6 +939,7 @@ export default function DemoPlayerPage() {
               <WhatNextCta
                 linkCopied={linkCopied}
                 creatingSession={creatingSession}
+                isMobile={isMobile}
                 onViewFinal={() => handleTabChange('final')}
                 onTryYourself={handleTryYourself}
                 onReplay={() => {
@@ -1027,12 +1028,13 @@ export default function DemoPlayerPage() {
             </div>
           </div>
 
-          {/* Speed control */}
-          <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-0.5">
+          {/* Speed control — КАО#R3-sugS2: announce active speed (was color-only) */}
+          <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-0.5" role="group" aria-label="Playback speed">
             {SPEEDS.map(s => (
               <button
                 key={s}
                 onClick={() => setSpeed(s)}
+                aria-pressed={state.speed === s}
                 className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                   state.speed === s
                     ? 'bg-indigo-600 text-white'
@@ -1078,6 +1080,8 @@ function TabButton({
   return (
     <button
       onClick={onClick}
+      role="tab"
+      aria-selected={active}
       className={`relative flex items-center gap-1.5 px-3 py-1.5 -mb-px border-b-2 text-sm font-medium transition-colors ${
         active
           ? 'border-indigo-500 text-white'
@@ -1946,7 +1950,7 @@ function DemoGroupFrames({ nodes }: { nodes: Node<AgentNodeData>[] }) {
 /** Status plaque — anchored top-center of the graph viewport. Shows either
  *  the active explicit annotation from `timeline.annotations` or an
  *  auto-derived narration based on agent statuses. */
-function StatusPlaque({ timeline, state }: { timeline: DemoTimeline; state: DemoPlayerState }) {
+function StatusPlaque({ timeline, state, isMobile = false }: { timeline: DemoTimeline; state: DemoPlayerState; isMobile?: boolean }) {
   const annotation = pickAnnotation(timeline.annotations, state.clock)
   const auto = annotation ? null : deriveStatus(timeline, state)
   const title = annotation ? annotation.title : auto!.title
@@ -1958,7 +1962,7 @@ function StatusPlaque({ timeline, state }: { timeline: DemoTimeline; state: Demo
   return (
     // Bottom-center, above the control bar — avoids colliding with the Spec
     // card (top-left) and the MetricsPanel (top-right).
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 max-w-lg w-[min(32rem,calc(100vw-340px))] pointer-events-none">
+    <div className={`absolute bottom-3 left-1/2 -translate-x-1/2 z-10 max-w-lg ${isMobile ? 'w-[calc(100vw-32px)]' : 'w-[min(32rem,calc(100vw-340px))]'} pointer-events-none`}>{/* КАО#R3-M9 mobile width */}
       <div className={`backdrop-blur-sm border rounded-xl px-3 py-2 shadow-lg transition-colors ${accentClass}`}>
         <div className="flex items-start gap-2">
           <span className="text-xl leading-none mt-0.5">{icon}</span>
@@ -2072,6 +2076,7 @@ function ProgressSlider({
 function WhatNextCta({
   linkCopied,
   creatingSession,
+  isMobile = false,
   onViewFinal,
   onTryYourself,
   onReplay,
@@ -2080,6 +2085,7 @@ function WhatNextCta({
 }: {
   linkCopied: boolean
   creatingSession: boolean
+  isMobile?: boolean
   onViewFinal: () => void
   onTryYourself: () => void
   onReplay: () => void
@@ -2088,7 +2094,7 @@ function WhatNextCta({
 }) {
   return (
     <div
-      className="absolute top-16 left-1/2 -translate-x-1/2 z-30 w-[min(34rem,calc(100vw-340px))] pointer-events-auto"
+      className={`absolute top-16 left-1/2 -translate-x-1/2 z-30 ${isMobile ? 'w-[calc(100vw-32px)]' : 'w-[min(34rem,calc(100vw-340px))]'} pointer-events-auto`} /* КАО#R3-M8 mobile width */
       // КАО#R2-11 — this is a passive, non-modal overlay (no focus trap, no
       // Escape, focus is not moved into it). role="dialog" misled screen readers
       // ("a dialog opened" but focus never follows). Announce it as a polite

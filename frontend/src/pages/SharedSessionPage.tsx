@@ -12,6 +12,7 @@ import {
   XCircle,
   Pause,
   Sparkles,
+  Palette,
 } from 'lucide-react'
 import { getSharedSession, type SharedSessionResponse } from '../services/api'
 import notify from '../components/common/StyledToast'
@@ -28,6 +29,7 @@ const STATUS_ICONS: Record<string, JSX.Element> = {
   awaiting_enhancement: <Sparkles className="w-4 h-4 text-purple-400" />,
   enhancing: <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />,
   awaiting_enhancement_review: <Sparkles className="w-4 h-4 text-amber-400" />,
+  awaiting_visual_review: <Palette className="w-4 h-4 text-amber-400" />,  // КАО#R3-01
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -40,6 +42,7 @@ const STATUS_COLORS: Record<string, string> = {
   awaiting_enhancement: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
   enhancing: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
   awaiting_enhancement_review: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  awaiting_visual_review: 'bg-amber-500/20 text-amber-300 border-amber-500/30',  // КАО#R3-01
 }
 
 export default function SharedSessionPage() {

@@ -302,6 +302,8 @@ async def submit_visual_review_scores(
         )
 
     # Validate every code_version_id belongs to this session.
+    # NOTE: КАО#R3-M7 (restrict to the current per-coder-max candidate set) was
+    # deferred together with M6 — same per-coder-max query + scripted-mock churn.
     cv_ids = [str(item.code_version_id) for item in payload.scores]
     cv_check = await db.execute(
         select(CodeVersion.id).where(

@@ -25,6 +25,7 @@ import {
   ArrowLeftRight,
   MoreHorizontal,
   ArrowUpDown,
+  Palette,
 } from 'lucide-react'
 import notify from '../components/common/StyledToast'
 import SpecHelperPanel from '../components/common/SpecHelperPanel'
@@ -48,6 +49,7 @@ const statusIcons: Record<string, JSX.Element> = {
   awaiting_enhancement: <Sparkles className="w-4 h-4 text-purple-400" />,
   enhancing: <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />,
   awaiting_enhancement_review: <Sparkles className="w-4 h-4 text-amber-400" />,
+  awaiting_visual_review: <Palette className="w-4 h-4 text-amber-400" />,  // КАО#R3-01
 }
 
 // HOTFIX: Filter PILL icons must NOT animate — the pill is a category
@@ -63,6 +65,7 @@ const statusFilterIcons: Record<string, JSX.Element> = {
   awaiting_enhancement: <Sparkles className="w-4 h-4 text-purple-400" />,
   enhancing: <Sparkles className="w-4 h-4 text-purple-400" />,
   awaiting_enhancement_review: <Sparkles className="w-4 h-4 text-amber-400" />,
+  awaiting_visual_review: <Palette className="w-4 h-4 text-amber-400" />,  // КАО#R3-01
 }
 
 // КАО#Full-C-5-FIX-01 (A11Y-1) — status badge contrast.
@@ -79,12 +82,14 @@ const statusColors: Record<string, string> = {
   awaiting_enhancement: 'bg-purple-500/20 text-purple-300 dark:text-purple-300',
   enhancing: 'bg-purple-500/20 text-purple-300 dark:text-purple-300',
   awaiting_enhancement_review: 'bg-amber-500/20 text-amber-300 dark:text-amber-300',
+  awaiting_visual_review: 'bg-amber-500/20 text-amber-300 dark:text-amber-300',  // КАО#R3-01
 }
 
 const statusLabels: Record<string, string> = {
   awaiting_enhancement: 'Awaiting Enhancement',
   enhancing: 'Enhancing...',
   awaiting_enhancement_review: 'Review Enhancements',
+  awaiting_visual_review: 'Visual Review',  // КАО#R3-01
 }
 
 // КАО#W4-FIX-01 — known status filter enums (matches statusColors keys plus 'all').
@@ -100,6 +105,7 @@ const VALID_STATUS_FILTERS = new Set<string>([
   'awaiting_enhancement',
   'enhancing',
   'awaiting_enhancement_review',
+  'awaiting_visual_review',  // КАО#R3-01
 ])
 
 export default function SessionsPage() {
@@ -914,7 +920,7 @@ export default function SessionsPage() {
             between statuses while a filter is active. Zero-count pills are muted. */}
         {!loading && sessions.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-2">
-            {['all', 'created', 'running', 'completed', 'failed', 'paused', 'cancelled', 'awaiting_enhancement', 'enhancing', 'awaiting_enhancement_review'].map(status => {
+            {['all', 'created', 'running', 'completed', 'failed', 'paused', 'cancelled', 'awaiting_enhancement', 'enhancing', 'awaiting_enhancement_review', 'awaiting_visual_review' /* КАО#R3-M2 */].map(status => {
               const isActive = statusFilter === status
               const count = status === 'all' ? sessions.length : sessions.filter(s => s.status === status).length
               const isEmpty = status !== 'all' && count === 0
@@ -1067,7 +1073,7 @@ export default function SessionsPage() {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-4 text-sm text-gray-400">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-400">{/* КАО#R3-sugS1 wrap */}
                         <span className="font-mono bg-gray-700/50 px-2 py-0.5 rounded">
                           {({
                             javascript_browser: 'JS (Browser)',

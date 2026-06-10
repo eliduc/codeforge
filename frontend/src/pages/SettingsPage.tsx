@@ -439,10 +439,16 @@ export default function SettingsPage() {
                     key={provider.name}
                     className="bg-cf-bg rounded-lg overflow-hidden"
                   >
-                    {/* Provider Header */}
+                    {/* Provider Header — КАО#R3-S3: keyboard-operable (was a
+                        plain onClick div; nested Test button rules out a real
+                        <button>, so role=button + tabIndex + Enter/Space). */}
                     <div
-                      className="flex items-center justify-between p-4 cursor-pointer hover:bg-cf-hover transition-colors"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={config.expanded}
+                      className="flex items-center justify-between p-4 cursor-pointer hover:bg-cf-hover transition-colors focus:outline-none focus:ring-2 focus:ring-cf-accent/50 focus:ring-inset"
                       onClick={() => toggleExpanded(provider.name)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(provider.name) } }}
                     >
                       <div className="flex items-center gap-4">
                         <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
