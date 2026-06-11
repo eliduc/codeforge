@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test'
+import { injectAuth as injectCookieAuth } from './_fixtures/auth'  // КАО#R4-M26 — httpOnly cookie auth for the authed-only demo tests
 
 /**
  * Round 14 — Team 1 (Test-Writer): Demo Player Wave 1–3 specs.
@@ -204,6 +205,11 @@ test.describe('Wave 1–3 — Demo Player (mandelbulb)', () => {
     // instead of opening ConfirmDialog. Auth users still see the dialog —
     // test that path only when E2E_AUTH_TOKEN is provided.
     test.skip(!process.env.E2E_AUTH_TOKEN, 'ConfirmDialog only for authenticated users; anonymous → /login (test 9b below)')
+
+    // КАО#R4-M26 — the test gates on E2E_AUTH_TOKEN but historically never
+    // injected auth, so it ran anonymously → "Try it yourself" navigated to
+    // /login and the dialog never opened. Inject the httpOnly-cookie session.
+    await injectCookieAuth(page.context())
 
     await page.goto(DEMO_URL)
     await waitForPlayerReady(page)

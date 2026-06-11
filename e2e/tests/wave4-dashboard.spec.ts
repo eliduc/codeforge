@@ -170,11 +170,12 @@ test.describe('Wave 4 — Dashboard', () => {
     await expect(page).toHaveURL(/\/sessions\?status=/, { timeout: 10_000 })
 
     // The active filter pill on /sessions is the <button> whose label maps to
-    // the same enum. SessionsPage uses Tailwind class `border-current` ONLY on
-    // the active pill. Match "All" at a word boundary so the trailing "(7)"
-    // count in the button's text doesn't break the selector.
+    // the same enum. КАО#R4-M2 — active pills now carry explicit per-status
+    // light/dark border classes (not the old `border-current`); the stable
+    // semantic contract is aria-pressed="true". Match "All" at a word boundary
+    // so the trailing "(7)" count in the button's text doesn't break the row.
     const sessionsFilterRow = page.locator('button', { hasText: /^All\b/i }).first().locator('..')
-    const activePill = sessionsFilterRow.locator('button.border-current').first()
+    const activePill = sessionsFilterRow.locator('button[aria-pressed="true"]').first()
     // We assert the active pill exists; if it's still "All" the URL sync is
     // missing — this asserts the spec contract and fails loudly otherwise.
     await expect(activePill).toBeVisible({ timeout: 5_000 })
