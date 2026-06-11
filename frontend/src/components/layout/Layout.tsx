@@ -340,7 +340,11 @@ export default function Layout({ children }: LayoutProps) {
       <aside
         className={clsx(
           'bg-cf-panel border-r border-cf-border flex flex-col flex-shrink-0',
-          'transition-all duration-300 ease-in-out overflow-hidden',
+          // КАО#R4-S1 — no overflow-hidden here: it clipped the user-menu
+          // dropdown (bottom-full, opens upward/outward) to invisibility. The
+          // collapse animation is already clipped per-element (logo text + nav
+          // labels carry their own overflow-hidden whitespace-nowrap).
+          'transition-all duration-300 ease-in-out',
           sidebarCollapsed ? 'w-12' : 'w-64'
         )}
         aria-label="Main navigation"

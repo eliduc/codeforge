@@ -175,7 +175,6 @@ const ApiKeyRow = forwardRef<ApiKeyRowHandle, ApiKeyRowProps>(function ApiKeyRow
         title={showKey ? `Hide ${fieldLabel.toLowerCase()}` : `Show ${fieldLabel.toLowerCase()}`}
         aria-label={showKey ? `Hide ${fieldLabel.toLowerCase()}` : `Show ${fieldLabel.toLowerCase()}`}
         onClick={() => setShowKey((v) => !v)}
-        tabIndex={-1}
         className="absolute right-2 top-1/2 -translate-y-1/2 text-cf-text-muted hover:text-cf-text focus:outline-none focus-visible:ring-2 focus-visible:ring-cf-primary rounded"
       >
         {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}

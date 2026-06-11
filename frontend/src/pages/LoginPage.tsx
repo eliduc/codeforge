@@ -246,8 +246,9 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         {/* Улучшатели#1 P3·S — Logo aria-hidden — decorative icon */}
-        <div className="flex flex-col items-center mb-8" aria-hidden="true">
-          <div className="w-14 h-14 bg-gradient-to-br from-cf-primary to-cf-secondary rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-indigo-500/20">
+        <div className="flex flex-col items-center mb-8">
+          {/* КАО#R4-M4 — aria-hidden only on the decorative icon, not the h1 */}
+          <div className="w-14 h-14 bg-gradient-to-br from-cf-primary to-cf-secondary rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-indigo-500/20" aria-hidden="true">
             <Code2 className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-cf-text">CodeForge</h1>

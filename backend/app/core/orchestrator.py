@@ -1050,13 +1050,25 @@ class WorkflowOrchestrator:
             # Workflow failed (e.g. all coders returned errors)
             logger.error(f"Workflow failed: {self.state.error}")
             self.state.phase = WorkflowPhase.FAILED
-            # Only write FAILED if session hasn't been reset/restarted
-            if self.session.status not in (SessionStatus.CREATED, SessionStatus.RUNNING):
+            # КАО#R4-S8 — write FAILED atomically, ONLY from RUNNING. The old
+            # guard `status not in (CREATED, RUNNING)` skipped the NORMAL case —
+            # a failing workflow IS RUNNING — so the session stayed RUNNING
+            # forever. The CAS still avoids clobbering a concurrent reset
+            # (CREATED) or cancel (CANCELLED).
+            from sqlalchemy import update as _sa_update
+            _cas = await self.db.execute(
+                _sa_update(Session)
+                .where(Session.id == self.session.id)
+                .where(Session.status == SessionStatus.RUNNING)
+                .values(status=SessionStatus.FAILED)
+            )
+            await self.db.commit()
+            if _cas.rowcount:
                 self.session.status = SessionStatus.FAILED
-                await self.db.commit()
             else:
                 logger.info(
-                    f"Session already in {self.session.status} state, skipping failed write"
+                    f"Session not RUNNING at failure (status={self.session.status}); "
+                    "skipping FAILED write to avoid clobbering a reset/cancel/restart"
                 )
             await self.emit_event("workflow_error", {
                 "error": self.state.error or "Workflow failed",

@@ -799,10 +799,11 @@ export default function SessionsPage() {
                 Creates a new session pre-configured with this template's agents and settings.
               </p>
               {/* Улучшатели#2 P1·S — Inline validation. Required asterisk + red border on submit if invalid. */}
-              <label className="block text-sm text-gray-300 mb-1">
+              <label className="block text-sm text-gray-300 mb-1" htmlFor="apply-name-input">
                 Session name <span className="text-red-400" aria-hidden="true">*</span>
               </label>
               <input
+                id="apply-name-input"
                 type="text"
                 value={applyName}
                 onChange={(e) => setApplyName(e.target.value)}
@@ -819,10 +820,11 @@ export default function SessionsPage() {
               )}
               {!(applySubmitAttempted && !applyNameValid) && <div className="mb-2" />}
 
-              <label className="block text-sm text-gray-300 mb-1">
+              <label className="block text-sm text-gray-300 mb-1" htmlFor="apply-spec-input">
                 Specification <span className="text-red-400" aria-hidden="true">*</span>
               </label>
               <textarea
+                id="apply-spec-input"
                 value={applySpec}
                 onChange={(e) => setApplySpec(e.target.value)}
                 rows={6}

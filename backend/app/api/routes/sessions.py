@@ -3120,7 +3120,7 @@ async def enhance_session(
     cas_stmt = (
         update(Session)
         .where(Session.id == session_id)
-        .where(Session.status.in_([SessionStatus.COMPLETED, SessionStatus.AWAITING_ENHANCEMENT, SessionStatus.CREATED]))
+        .where(Session.status.in_([SessionStatus.COMPLETED, SessionStatus.AWAITING_ENHANCEMENT, SessionStatus.AWAITING_ENHANCEMENT_REVIEW, SessionStatus.CREATED]))  # КАО#R4-M9 — review state is in `allowed` but was missing here → always 409
         .values(status=SessionStatus.ENHANCING)
     )
     cas_result = await db.execute(cas_stmt)

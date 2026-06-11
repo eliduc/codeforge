@@ -64,7 +64,7 @@ export default function CommandPalette() {
   // Hard-coded command set (Wave 2 — no plugin registry).
   const commands: PaletteCommand[] = useMemo(() => [
     { id: 'nav-sessions',  label: 'Go to Sessions',  category: 'Navigate', icon: FolderOpen, run: () => navigate('/sessions') },
-    { id: 'nav-dashboard', label: 'Go to Dashboard', category: 'Navigate', icon: BarChart3,  run: () => navigate('/') },
+    { id: 'nav-dashboard', label: 'Go to Dashboard', category: 'Navigate', icon: BarChart3,  run: () => navigate('/dashboard') },  /* КАО#R4-S2 — '/' redirects to /sessions */
     { id: 'nav-demos',     label: 'Go to Demos',     category: 'Navigate', icon: Sparkles,   run: () => navigate('/demos') },
     { id: 'nav-settings',  label: 'Go to Settings',  category: 'Navigate', icon: Settings,   run: () => navigate('/settings') },
     { id: 'new-session',   label: 'New session',     category: 'Navigate', icon: Plus,       run: () => navigate('/sessions/new') },

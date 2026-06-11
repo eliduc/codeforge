@@ -232,7 +232,10 @@ async function apiFetchRaw(
     }
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
+      // КАО#R4-M21 — on a non-JSON error body keep detail empty so the fallback
+      // below surfaces the real HTTP status ("API error: 503") instead of a
+      // status-less "Unknown error" (which broke 5xx-vs-auth classification).
+      const error = await response.json().catch(() => ({ detail: '' }))
       // КАО#VR-27 — FastAPI ValidationError responses look like
       //   { detail: [ { loc: [...], msg: 'Input should be a valid integer…', type: '…' }, … ] }
       // Naively passing an array to new Error() yields the message

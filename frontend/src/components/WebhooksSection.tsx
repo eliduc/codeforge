@@ -359,8 +359,9 @@ export default function WebhooksSection() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-cf-text-muted mb-1">Name</label>
+              <label className="block text-xs font-medium text-cf-text-muted mb-1" htmlFor="webhook-name-input">Name</label>
               <input
+                id="webhook-name-input"
                 type="text"
                 value={form.name}
                 onChange={e => setForm({ ...form, name: e.target.value })}
@@ -385,8 +386,9 @@ export default function WebhooksSection() {
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-cf-text-muted mb-1">URL</label>
+              <label className="block text-xs font-medium text-cf-text-muted mb-1" htmlFor="webhook-url-input">URL</label>
               <input
+                id="webhook-url-input"
                 type="text"
                 value={form.url}
                 onChange={e => setForm({ ...form, url: e.target.value })}
@@ -396,10 +398,11 @@ export default function WebhooksSection() {
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-cf-text-muted mb-1">
+              {/* КАО#R4-S5 — name the checkbox group for AT (was an orphan label) */}
+              <div className="block text-xs font-medium text-cf-text-muted mb-1" id="webhook-events-label">
                 Events
-              </label>
-              <div className="flex flex-wrap gap-2">
+              </div>
+              <div className="flex flex-wrap gap-2" role="group" aria-labelledby="webhook-events-label">
                 <label className="flex items-center gap-1.5 text-sm text-cf-text cursor-pointer">
                   <input
                     type="checkbox"
@@ -425,10 +428,11 @@ export default function WebhooksSection() {
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-cf-text-muted mb-1">
+              <label className="block text-xs font-medium text-cf-text-muted mb-1" htmlFor="webhook-secret-input">
                 HMAC secret (optional)
               </label>
               <input
+                id="webhook-secret-input"
                 type="password"
                 value={form.secret}
                 onChange={e => setForm({ ...form, secret: e.target.value })}

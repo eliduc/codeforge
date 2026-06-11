@@ -100,6 +100,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY executor.py /app/
 COPY browser_validator.js /app/
+# КАО#R4-C1 — executor.py hard-requires this for /capture-screenshots (VR-24/38);
+# it was missing from the COPY list, so a rebuilt image silently failed every
+# visual-review screenshot capture.
+COPY browser_screenshot.js /app/
 
 # Give sandbox user write access to /tmp and /app for execution
 RUN chmod 1777 /tmp && chown -R sandbox:sandbox /app

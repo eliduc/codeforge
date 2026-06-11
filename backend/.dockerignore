@@ -1,0 +1,18 @@
+# КАО#R4-M23 — keep test artifacts, caches and local secrets out of the image
+# (backend/Dockerfile uses `COPY . .`).
+.env
+.env.*
+!.env.example
+tests/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+pytest_*.txt
+htmlcov/
+.coverage
+.venv/
+venv/
+*.pyc

@@ -56,9 +56,17 @@ export const useAuthStore = create<AuthState>((set) => ({
           loading: false,
           authDisabled: user.id === 'dev',
         })
-      } catch {
-        // Session expired or invalid — self-heal back to logged-out.
-        clearAuthedHint()
+      } catch (e) {
+        // КАО#R4-S12 — only self-heal to logged-out on a GENUINE auth rejection.
+        // A transient 5xx/network blip (e.g. backend mid-deploy) must not
+        // permanently clearAuthedHint() — that would log the user out until a
+        // manual re-login. A real 401 already redirects to /login inside apiFetch;
+        // anything else here is treated as transient and the hint is kept so the
+        // next reload/navigation re-validates.
+        const msg = e instanceof Error ? e.message : String(e)
+        if (/Session expired|Not authenticated|Invalid or missing credentials|\b40[13]\b/i.test(msg)) {
+          clearAuthedHint()
+        }
         set({ user: null, isAuthenticated: false, loading: false })
       }
       return

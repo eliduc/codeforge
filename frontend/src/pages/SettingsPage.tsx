@@ -527,11 +527,12 @@ export default function SettingsPage() {
 
                         {/* Rate Limit Input + Save (separate write — API-key save is row-owned). */}
                         <div>
-                          <label className="block text-sm font-medium text-cf-text mb-1">
+                          <label className="block text-sm font-medium text-cf-text mb-1" htmlFor={`rate-limit-${provider.name}`}>
                             Rate Limit (requests/min)
                           </label>
                           <div className="flex items-stretch gap-2">
                             <input
+                              id={`rate-limit-${provider.name}`}
                               type="number"
                               value={config.rateLimit}
                               onChange={(e) => { const n = parseInt(e.target.value); updateConfig(provider.name, 'rateLimit', isNaN(n) ? 10 : n) }}

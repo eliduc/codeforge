@@ -65,6 +65,11 @@ services:
       SANDBOX_API_KEY: ${SANDBOX_API_KEY:-codeforge-sandbox-secret}
     ports:
       - "8300:8000"
+    # КАО#R4-M22 — persist visual-review screenshots across container recreation
+    # (they live under /var/lib/codeforge; DB rows referencing them outlive the
+    # container, so without this the rows dangle after a rebuild).
+    volumes:
+      - codeforge_storage:/var/lib/codeforge
     depends_on:
       db:
         condition: service_healthy
@@ -101,3 +106,4 @@ services:
 
 volumes:
   postgres_data:
+  codeforge_storage:  # КАО#R4-M22
