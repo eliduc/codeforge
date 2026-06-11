@@ -122,23 +122,22 @@ def _scripted_db(results: Sequence[_ResultWrapper]) -> Any:
 # ---------------------------------------------------------------------------
 # Helper: build a result sequence matching rank_with_vision_llm's queries.
 #
-# rank_with_vision_llm fires queries in this order:
+# rank_with_vision_llm fires queries in this order (КАО#R3-M6 — the old
+# separate "global max(iteration)" scalar query is gone; candidates now come
+# from ONE per-coder-max join query):
 #   1. select(SessionModel) WHERE id=...                  -> .scalar_one_or_none()
-#   2. select(max(CodeVersion.iteration)) WHERE ...       -> .scalar_one_or_none()
-#   3. select(CodeVersion) WHERE iteration=max            -> .scalars().all()
-#   4..N. select(CodeVersionScreenshot) WHERE cv=X        -> .scalars().all() (one per cv)
+#   2. select(CodeVersion) JOIN max-iter-per-coder        -> .scalars().all()
+#   3..N. select(CodeVersionScreenshot) WHERE cv=X        -> .scalars().all() (one per cv)
 # ---------------------------------------------------------------------------
 
 
 def _build_rank_db_results(
     session: _FakeSession,
-    max_iter: int,
     cvs: list[_FakeCodeVersion],
     screenshots_by_cv: dict[str, list[_FakeScreenshot]],
 ) -> list[_ResultWrapper]:
     results: list[_ResultWrapper] = [
         _ResultWrapper(scalar=session),
-        _ResultWrapper(scalar=max_iter),
         _ResultWrapper(scalars=list(cvs)),
     ]
     for cv in cvs:
@@ -167,7 +166,7 @@ async def test_rank_with_vision_llm_two_candidates_persists_scores() -> None:
         cv_b: [_FakeScreenshot(cv_b, 0, image_path=f"screenshots/s/{cv_b}/frame_0.png")],
     }
     db = _scripted_db(
-        _build_rank_db_results(_FakeSession(id="s"), 2, cvs, shots)
+        _build_rank_db_results(_FakeSession(id="s"), cvs, shots)
     )
 
     fake_llm_json = (
@@ -205,7 +204,7 @@ async def test_rank_with_vision_llm_ignores_invalid_code_version_ids() -> None:
     cv_a = "11111111-1111-1111-1111-111111111111"
     cvs = [_FakeCodeVersion(id=cv_a, iteration=0, coder_index=0)]
     shots = {cv_a: [_FakeScreenshot(cv_a, 0, image_path="x.png")]}
-    db = _scripted_db(_build_rank_db_results(_FakeSession(id="s"), 0, cvs, shots))
+    db = _scripted_db(_build_rank_db_results(_FakeSession(id="s"), cvs, shots))
 
     bogus = "99999999-9999-9999-9999-999999999999"
     fake_json = (
@@ -234,7 +233,7 @@ async def test_rank_with_vision_llm_no_screenshots_returns_error() -> None:
     cv_a = "11111111-1111-1111-1111-111111111111"
     cvs = [_FakeCodeVersion(id=cv_a)]
     db = _scripted_db(
-        _build_rank_db_results(_FakeSession(id="s"), 0, cvs, {cv_a: []})
+        _build_rank_db_results(_FakeSession(id="s"), cvs, {cv_a: []})
     )
     result = await rank_with_vision_llm(db, "s")
     assert result.scores == []
@@ -261,7 +260,7 @@ async def test_rank_with_vision_llm_clamps_out_of_range_scores() -> None:
         cv_a: [_FakeScreenshot(cv_a, 0, image_path="a.png")],
         cv_b: [_FakeScreenshot(cv_b, 0, image_path="b.png")],
     }
-    db = _scripted_db(_build_rank_db_results(_FakeSession(id="s"), 0, cvs, shots))
+    db = _scripted_db(_build_rank_db_results(_FakeSession(id="s"), cvs, shots))
     fake_json = (
         '{"ranking": ['
         f'{{"code_version_id": "{cv_a}", "score_0_10": 15}}, '

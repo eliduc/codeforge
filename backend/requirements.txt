@@ -1,5 +1,8 @@
 # FastAPI and server
-fastapi~=0.115.0
+# КАО#PE-A — fastapi 0.115 capped starlette at 0.46.x, which carries
+# CVE-2025-54121 + CVE-2025-62727 (fixed in 0.49.1). 0.128.x allows <0.51.
+fastapi~=0.128.8
+starlette>=0.49.1,<0.51
 uvicorn[standard]~=0.30.0
 python-multipart~=0.0.9
 websockets>=13.0,<16
@@ -19,7 +22,7 @@ httpx>=0.28.1,<1
 # Utilities
 pydantic~=2.9.0
 pydantic-settings~=2.5.0
-python-dotenv~=1.0.1
+python-dotenv~=1.2.2  # КАО#PE-A — CVE-2026-28684 (fixed 1.2.2)
 # КАО#R1-12 — bump off 3.3.0 (CVE-2024-33664 JWE-decompression DoS reachable
 # on any Bearer endpoint; CVE-2024-33663 algorithm confusion). Fixed in 3.4.0.
 python-jose[cryptography]>=3.4.0,<4
@@ -31,16 +34,17 @@ docker~=7.0.0
 
 # PDF generation
 reportlab~=4.1.0
-markdown~=3.5.2
+markdown~=3.8.1  # КАО#PE-A — PYSEC-2026-89 (fixed 3.8.1)
 
-# Testing
-pytest~=7.4.4
-pytest-asyncio~=0.23.4
-pytest-cov~=4.1.0
+# Testing — КАО#PE-A: moved to requirements-dev.txt. The production image
+# excludes tests/ (КАО#R4-M23 .dockerignore), so shipping pytest only added
+# CVE surface (CVE-2025-71176) to the runtime image.
 
 # Async utilities
 aiofiles~=23.2.1
 aiocache~=0.12.2
-aiohttp~=3.9.0
+# КАО#PE-A — 3.9.5 carried 22 known CVEs (request smuggling, zip-bomb DoS,
+# header parsing); 3.14 is the first line clearing the full set.
+aiohttp~=3.14.0
 aiosmtplib>=3.0.0
 email-validator>=2.0.0

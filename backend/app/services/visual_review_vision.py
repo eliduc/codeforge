@@ -370,30 +370,34 @@ async def rank_with_vision_llm(
 
     from sqlalchemy import func as sa_func
 
-    # NOTE: КАО#R3-M6 (rank per-coder-max instead of global-max iteration) was
-    # deferred — it requires rewriting the scripted query mocks in
-    # tests/test_visual_review_vision.py. Tracked as a separate task.
-    max_iter = (
-        await db.execute(
-            select(sa_func.max(CodeVersion.iteration))
-            .where(CodeVersion.session_id == session_id)
+    # КАО#R3-M6 — rank the LATEST CodeVersion per coder_index (the captured
+    # candidate set, matching capture_for_latest_iteration / get_visual_review_state),
+    # not the GLOBAL max iteration. With unequal per-coder iteration counts the
+    # global max silently dropped any coder that stopped at a lower iteration.
+    max_iter_per_coder = (
+        select(
+            CodeVersion.coder_index.label("coder_index"),
+            sa_func.max(CodeVersion.iteration).label("max_iter"),
         )
-    ).scalar_one_or_none()
-    if max_iter is None:
-        return VisionRankingResult(
-            error="no code versions for session", model=model
-        )
-
+        .where(CodeVersion.session_id == session_id)
+        .group_by(CodeVersion.coder_index)
+        .subquery()
+    )
     cvs = (
         await db.execute(
             select(CodeVersion)
+            .join(
+                max_iter_per_coder,
+                (CodeVersion.coder_index == max_iter_per_coder.c.coder_index)
+                & (CodeVersion.iteration == max_iter_per_coder.c.max_iter),
+            )
             .where(CodeVersion.session_id == session_id)
-            .where(CodeVersion.iteration == max_iter)
+            .order_by(CodeVersion.coder_index)
         )
     ).scalars().all()
     if not cvs:
         return VisionRankingResult(
-            error="no candidates at latest iteration", model=model
+            error="no code versions for session", model=model
         )
 
     # --- 2. Pull screenshots for each candidate ---

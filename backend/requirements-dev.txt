@@ -6,3 +6,10 @@
 # package directly (via `python -m pip_audit`) so a CLI-shim on PATH is not
 # required, but the module must be installable in the test runner image.
 pip-audit>=2.7
+
+# КАО#PE-A — test stack moved out of requirements.txt: the production image
+# carries no tests/ (КАО#R4-M23 .dockerignore), so pytest in the runtime image
+# was pure CVE surface (CVE-2025-71176, fixed only in the 9.x line).
+pytest>=7.4.4
+pytest-asyncio>=0.23.4
+pytest-cov>=4.1.0

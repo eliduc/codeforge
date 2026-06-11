@@ -301,12 +301,30 @@ async def submit_visual_review_scores(
             detail=f"Session is not awaiting visual review (status={session_obj.status})",
         )
 
-    # Validate every code_version_id belongs to this session.
-    # NOTE: КАО#R3-M7 (restrict to the current per-coder-max candidate set) was
-    # deferred together with M6 — same per-coder-max query + scripted-mock churn.
+    # КАО#R3-M7 — validate against the CURRENT candidate set (latest
+    # CodeVersion per coder_index — what the review panel actually shows),
+    # not merely "any CodeVersion of this session": scores smuggled in for
+    # stale iterations would silently skew the finalizer's winner pick.
+    from sqlalchemy import func as sa_func
+
+    max_iter_per_coder = (
+        select(
+            CodeVersion.coder_index.label("coder_index"),
+            sa_func.max(CodeVersion.iteration).label("max_iter"),
+        )
+        .where(CodeVersion.session_id == str(session_id))
+        .group_by(CodeVersion.coder_index)
+        .subquery()
+    )
     cv_ids = [str(item.code_version_id) for item in payload.scores]
     cv_check = await db.execute(
-        select(CodeVersion.id).where(
+        select(CodeVersion.id)
+        .join(
+            max_iter_per_coder,
+            (CodeVersion.coder_index == max_iter_per_coder.c.coder_index)
+            & (CodeVersion.iteration == max_iter_per_coder.c.max_iter),
+        )
+        .where(
             CodeVersion.session_id == str(session_id),
             CodeVersion.id.in_(cv_ids),
         )
@@ -316,7 +334,10 @@ async def submit_visual_review_scores(
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"code_version_id(s) not in this session: {missing}",
+            detail=(
+                "code_version_id(s) not in this session's current candidate set "
+                f"(latest iteration per coder): {missing}"
+            ),
         )
 
     # Upsert-by-delete-then-insert keeps the (session, code_version, source)
