@@ -239,6 +239,15 @@ class LLMRouter:
                 retryable=True,
             )
 
+        # КАО#R4-S11 — central output-token clamp. The coder floor (128k/131k)
+        # exceeded Gemini's 65536 and the o-series' 100000 caps; only Anthropic
+        # clamped internally, so Google/OpenAI calls 400'd or mis-billed.
+        if max_tokens:
+            _cap = llm_provider.get_max_output_tokens(model)
+            if _cap and max_tokens > _cap:
+                logger.info(f"Clamping max_tokens {max_tokens} -> {_cap} for {provider}/{model}")
+                max_tokens = _cap
+
         # Generate response
         try:
             result = await llm_provider.generate(
@@ -313,10 +322,20 @@ class LLMRouter:
                 retryable=False,
             )
 
+        # КАО#R4-M18 — mirror generate()'s VR-54 substitution tracking on the
+        # streaming path (the default coder path) so llm_requests logs the truth.
+        requested_model = model
+        model_substituted = False
         if not llm_provider.supports_model(model):
             available = llm_provider.available_models
             if available:
-                model = available[0]
+                fallback_model = available[0]
+                logger.warning(
+                    f"Model '{model}' not available for {provider} (stream). "
+                    f"Falling back to '{fallback_model}'. Available: {available}"
+                )
+                model = fallback_model
+                model_substituted = True
             else:
                 return LLMError(
                     message=f"Model '{model}' not supported by provider '{provider}'.",
@@ -340,6 +359,13 @@ class LLMRouter:
                 retryable=True,
             )
 
+        # КАО#R4-S11 — central output-token clamp (see generate()).
+        if max_tokens:
+            _cap = llm_provider.get_max_output_tokens(model)
+            if _cap and max_tokens > _cap:
+                logger.info(f"Clamping max_tokens {max_tokens} -> {_cap} for {provider}/{model} (stream)")
+                max_tokens = _cap
+
         try:
             result = await llm_provider.generate_stream(
                 prompt=prompt,
@@ -358,6 +384,11 @@ class LLMRouter:
                     model, result.input_tokens, result.output_tokens, result.thinking_tokens
                 )
                 result.raw_response["calculated_cost_usd"] = cost
+                # КАО#R4-M18 — VR-54/56 metadata on the streaming path.
+                result.raw_response["model_used"] = model
+                if model_substituted:
+                    result.raw_response["model_requested"] = requested_model
+                    result.raw_response["model_substituted"] = True
             return result
         except Exception as e:
             logger.exception(f"Error streaming response from {provider}/{model}")

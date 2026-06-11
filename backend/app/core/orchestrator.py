@@ -155,6 +155,9 @@ class WorkflowOrchestrator:
         self._db_lock = asyncio.Lock()  # Lock for concurrent DB operations
         self._DB_LOCK_TIMEOUT = 30.0  # seconds — prevent deadlocks on _db_lock
         self._state_lock = asyncio.Lock()  # Lock for concurrent mutations of state.finished_coders / coder_finish_reasons
+        # КАО#R4-S9 — per-run delivery ledger for NULL-target ("to all agents")
+        # interventions: intervention_id -> set of coder indices it reached.
+        self._intervention_deliveries: dict[str, set[int]] = {}
         # Cache immutable session ID to avoid lazy-load errors after DB rollback
         self._session_id = str(session.id)
 
@@ -536,6 +539,15 @@ class WorkflowOrchestrator:
                 forced_winner_reasoning=forced_winner_reasoning,
             )
 
+            # КАО#R4-M8 — honour a cancel that arrived during finalization:
+            # don't overwrite CANCELLED with COMPLETED/AWAITING_*.
+            if self.state.should_stop:
+                logger.info("Finalization-only run cancelled — skipping terminal status write")
+                await self.emit_event("workflow_cancelled", {"re_finalize": True})
+                return False
+
+            from sqlalchemy import update as _sa_update
+
             # Determine post-finalization status
             enhancer_types = {
                 AgentType.ENHANCER_DESIGN, AgentType.ENHANCER_FUNC,
@@ -548,8 +560,19 @@ class WorkflowOrchestrator:
 
             if has_enhancers:
                 self.state.phase = WorkflowPhase.COMPLETED
-                self.session.status = SessionStatus.AWAITING_ENHANCEMENT
+                # КАО#R4-M8 — CAS from RUNNING so a concurrent cancel/reset wins.
+                _cas = await self.db.execute(
+                    _sa_update(Session)
+                    .where(Session.id == self.session.id)
+                    .where(Session.status == SessionStatus.RUNNING)
+                    .values(status=SessionStatus.AWAITING_ENHANCEMENT)
+                )
                 await self.db.commit()
+                if _cas.rowcount:
+                    self.session.status = SessionStatus.AWAITING_ENHANCEMENT
+                else:
+                    logger.info("Session no longer RUNNING after re-finalize; keeping its current status")
+                    return True
 
                 await self.emit_event("awaiting_enhancement", {
                     "total_iterations": self.state.current_iteration,
@@ -560,8 +583,19 @@ class WorkflowOrchestrator:
                 })
             else:
                 self.state.phase = WorkflowPhase.COMPLETED
-                self.session.status = SessionStatus.COMPLETED
+                # КАО#R4-M8 — CAS from RUNNING so a concurrent cancel/reset wins.
+                _cas = await self.db.execute(
+                    _sa_update(Session)
+                    .where(Session.id == self.session.id)
+                    .where(Session.status == SessionStatus.RUNNING)
+                    .values(status=SessionStatus.COMPLETED)
+                )
                 await self.db.commit()
+                if _cas.rowcount:
+                    self.session.status = SessionStatus.COMPLETED
+                else:
+                    logger.info("Session no longer RUNNING after re-finalize; keeping its current status")
+                    return True
 
                 await self.emit_event("workflow_completed", {
                     "total_iterations": self.state.current_iteration,
@@ -668,8 +702,14 @@ class WorkflowOrchestrator:
                 await self.db.commit()
             logger.info("Workflow resumed")
 
-    async def run(self) -> bool:
+    async def run(self, resume_from_db: bool = False) -> bool:
         """Run the complete workflow.
+
+        КАО#R4-M14 — ``resume_from_db=True`` (boot auto-resume / post-restart
+        /resume) restores persisted work via load_state_from_db() instead of
+        re-running the whole pipeline from iteration 1: loaded coders are
+        marked finished, so the loop falls through to finalization with the
+        already-produced code (no duplicated LLM spend, no FinalResult clobber).
 
         Returns True if workflow completed successfully, False if cancelled/failed.
         """
@@ -680,7 +720,7 @@ class WorkflowOrchestrator:
         try:
             if timeout_sec:
                 try:
-                    return await asyncio.wait_for(self._run_inner(), timeout=float(timeout_sec))
+                    return await asyncio.wait_for(self._run_inner(resume_from_db=resume_from_db), timeout=float(timeout_sec))
                 except asyncio.TimeoutError:
                     logger.error(f"Session exceeded time budget of {timeout_sec}s")
                     self.state.should_stop = True
@@ -703,14 +743,28 @@ class WorkflowOrchestrator:
                     except Exception:
                         pass
                     return False
-            return await self._run_inner()
+            return await self._run_inner(resume_from_db=resume_from_db)
         except Exception as e:
             return await self._handle_workflow_exception(e)
 
-    async def _run_inner(self) -> bool:
+    async def _run_inner(self, resume_from_db: bool = False) -> bool:
         """Inner workflow body — extracted so run() can wrap it with a timeout."""
         try:
             await self._initialize_workflow()
+            # КАО#R4-M14 — restore half of checkpointing: seed state from the DB
+            # on a post-restart resume so we DON'T re-run from iteration 1.
+            if resume_from_db:
+                try:
+                    await self.load_state_from_db()
+                    if self.state.code_versions:
+                        logger.info(
+                            "Resume-from-DB: restored persisted work "
+                            f"(iteration={self.state.current_iteration}, "
+                            f"{len(self.state.code_versions)} code versions) — "
+                            "continuing to finalization instead of re-running"
+                        )
+                except Exception as resume_err:  # noqa: BLE001
+                    logger.warning(f"Resume-from-DB load failed (running fresh): {resume_err}")
             # VR-54 — surface any configured model the provider doesn't actually
             # offer (the router silently falls back to its first available model).
             await self._warn_substituted_models()
@@ -1232,8 +1286,21 @@ class WorkflowOrchestrator:
             for coder in active_coders
         ]
 
-        # Wait for all per-coder pipelines to finish (exceptions surface here)
-        await asyncio.gather(*pipeline_tasks, return_exceptions=True)
+        # Wait for all per-coder pipelines to finish.
+        # КАО#R4-S2sug — actually SURFACE the exceptions (they were silently
+        # discarded before): log + emit an agent_error per crashed pipeline.
+        _pipeline_results = await asyncio.gather(*pipeline_tasks, return_exceptions=True)
+        for _coder, _res in zip(active_coders, _pipeline_results):
+            if isinstance(_res, BaseException):
+                logger.error(
+                    f"Coder {_coder.agent_index} pipeline crashed: {_res!r}",
+                    exc_info=_res,
+                )
+                await self.emit_event("agent_error", {
+                    "agent_type": "coder_pipeline",
+                    "agent_index": _coder.agent_index,
+                    "error": str(_res) or repr(_res),
+                })
 
         logger.info(
             f"Pipelined iteration complete: {self.state.coders_completed}/{len(active_coders)} coders, "
@@ -2149,6 +2216,16 @@ class WorkflowOrchestrator:
             async with self._db_lock:
                 self.state.total_tokens += fix_result.input_tokens + fix_result.output_tokens
                 self.state.total_cost += fix_result.cost_usd
+                # КАО#R4-M10 — persist the sandbox fix-loop call to LLMRequest;
+                # previously these calls were invisible to metrics/llm_requests
+                # and FinalResult totals shrank after a VR resume / re-finalize.
+                await self._save_llm_request(
+                    agent_type=AgentType.CODER,
+                    agent_index=coder.agent_index,
+                    result=fix_result,
+                    provider=coder.provider,
+                    model=coder.model,
+                )
 
             if fix_result.success and fix_result.parsed_data and fix_result.parsed_data.get("code"):
                 current_code = fix_result.parsed_data["code"]
@@ -2764,18 +2841,50 @@ class WorkflowOrchestrator:
                         f"{self.state.current_iteration} — will retry next iteration"
                     )
             elif not has_issues:
-                # No critical/serious issues - coder finished successfully
-                async with self._state_lock:
-                    self.state.finished_coders.add(coder_index)
-                    self.state.coder_finish_reasons[coder_index] = "no_issues"
+                # КАО#R4-M12 — "no issues" must mean "audited and clean", not
+                # "nobody looked". An EMPTY summary (all testers/summarizer
+                # failed this iteration) used to promote unaudited code as a
+                # clean pass; now the coder retries unless iterations are spent.
+                audited = bool(summary)
+                if audited:
+                    # No critical/serious issues - coder finished successfully
+                    async with self._state_lock:
+                        self.state.finished_coders.add(coder_index)
+                        self.state.coder_finish_reasons[coder_index] = "no_issues"
 
-                logger.info(f"Coder {coder_index} finished at iteration {coder_iteration}: no critical/serious issues")
+                    logger.info(f"Coder {coder_index} finished at iteration {coder_iteration}: no critical/serious issues")
 
-                await self.emit_event("coder_finished", {
-                    "coder_index": coder_index,
-                    "reason": "no_issues",
-                    "iteration": coder_iteration,
-                })
+                    await self.emit_event("coder_finished", {
+                        "coder_index": coder_index,
+                        "reason": "no_issues",
+                        "iteration": coder_iteration,
+                    })
+                elif at_max_iterations:
+                    async with self._state_lock:
+                        self.state.finished_coders.add(coder_index)
+                        self.state.coder_finish_reasons[coder_index] = "max_iterations"
+                    logger.warning(
+                        f"Coder {coder_index} finished at iteration {coder_iteration}: "
+                        "max iterations reached WITHOUT an audit (testers/summarizer failed)"
+                    )
+                    await self.emit_event("coder_finished", {
+                        "coder_index": coder_index,
+                        "reason": "max_iterations",
+                        "iteration": coder_iteration,
+                        "unaudited": True,
+                    })
+                else:
+                    logger.warning(
+                        f"Coder {coder_index}: no summary for iteration {coder_iteration} — "
+                        "not finishing as no_issues; retrying next iteration"
+                    )
+                    await self.emit_event("coder_continuing", {
+                        "coder_index": coder_index,
+                        "iteration": coder_iteration,
+                        "critical_issues": 0,
+                        "serious_issues": 0,
+                        "unaudited": True,
+                    })
             elif at_max_iterations:
                 # Reached max iterations - force finish
                 async with self._state_lock:
@@ -2852,7 +2961,31 @@ class WorkflowOrchestrator:
                 logger.error(f"Failed to resolve forced_winner_code_version_id: {e}")
 
         if not self.finalizer:
-            logger.warning("No finalizer configured, using first coder's code")
+            # КАО#R4-M15 — the log claimed "using first coder's code" but wrote
+            # NO FinalResult, so the session completed with no final result.
+            # Persist the same fallback the finalizer-timeout branch builds.
+            non_empty = {k: v for k, v in self.state.code_versions.items() if v and v.strip()}
+            if non_empty:
+                if forced_winner_coder_index is not None and forced_winner_coder_index in non_empty:
+                    pick = forced_winner_coder_index
+                    reasoning = (forced_winner_reasoning or "").strip() or "No finalizer configured."
+                else:
+                    pick = max(non_empty, key=lambda k: len(non_empty[k]))
+                    reasoning = f"No finalizer configured — using coder {pick}'s code."
+                self.db.add(FinalResult(
+                    session_id=self.session.id,
+                    selected_coder_index=pick,
+                    final_code=non_empty[pick],
+                    readme_content="",
+                    total_iterations=self.state.current_iteration,
+                    total_tokens=self.state.total_tokens,
+                    total_cost_usd=self.state.total_cost,
+                    selection_reasoning=reasoning,
+                ))
+                await self.db.commit()
+                logger.warning(f"No finalizer configured — persisted fallback FinalResult from coder {pick}")
+            else:
+                logger.warning("No finalizer configured and no non-empty code — nothing to finalize")
             return
 
         # Check if we have any code to finalize
@@ -3317,6 +3450,30 @@ class WorkflowOrchestrator:
                 )
                 code_version = (await self.db.execute(stmt)).scalar_one_or_none()
 
+                if code_version is None:
+                    # КАО#R4-M13 — fallback paths audit code whose CodeVersion row
+                    # carries an older iteration; attach the audit to the coder's
+                    # LATEST version instead of silently dropping it.
+                    fb_stmt = (
+                        select(CodeVersion)
+                        .where(
+                            CodeVersion.session_id == self.session.id,
+                            CodeVersion.coder_index == coder_index,
+                        )
+                        .order_by(CodeVersion.iteration.desc())
+                        .limit(1)
+                    )
+                    code_version = (await self.db.execute(fb_stmt)).scalar_one_or_none()
+                    if code_version is not None:
+                        logger.warning(
+                            f"Audit for coder {coder_index} iter {self.state.current_iteration}: "
+                            f"no CodeVersion at that iteration — attaching to latest (iter {code_version.iteration})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Audit for coder {coder_index} dropped: no CodeVersion rows exist at all"
+                        )
+
                 if code_version:
                     audit = Audit(
                         session_id=self.session.id,
@@ -3583,15 +3740,33 @@ class WorkflowOrchestrator:
         result = await self.db.execute(stmt)
         interventions = result.scalars().all()
 
-        # Mark as applied so they aren't re-used in future iterations
+        # КАО#R4-S9 — a NULL-target ("to all agents") intervention must reach
+        # EVERY active coder, not just the first to fetch it. Track per-run
+        # delivery and only mark such rows applied once all active coders have
+        # received them. Targeted rows keep the old mark-on-first-fetch.
+        active_indices = {c.agent_index for c in self.state.get_active_coders(self.coders)}
+        delivered: list = []
+        commit_needed = False
         for i in interventions:
-            i.applied = True
-        if interventions:
+            if i.target_agent_type is None:
+                seen = self._intervention_deliveries.setdefault(str(i.id), set())
+                if coder_index in seen:
+                    continue  # this coder already got it this round
+                seen.add(coder_index)
+                delivered.append(i)
+                if active_indices.issubset(seen):
+                    i.applied = True
+                    commit_needed = True
+            else:
+                delivered.append(i)
+                i.applied = True
+                commit_needed = True
+        if commit_needed:
             await self.db.commit()
 
         return [
             {"type": i.intervention_type, "content": i.content}
-            for i in interventions
+            for i in delivered
         ]
 
     async def _get_coder_rejections(self, coder_index: int) -> Optional[dict]:

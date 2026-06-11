@@ -292,13 +292,13 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p role="alert" className="text-red-400 text-sm mb-4">{error}</p>
+                  <p role="alert" className="text-red-600 dark:text-red-400 text-sm mb-4">{error}</p>
                 )}
 
                 <button
                   type="submit"
                   disabled={loading || !email.trim()}
-                  className="w-full py-2.5 bg-cf-primary hover:bg-cf-primary/90 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                  className="w-full py-2.5 bg-cf-primary hover:bg-cf-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   {loading ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -321,7 +321,7 @@ export default function LoginPage() {
               </button>
 
               <div className="flex flex-col items-center text-center">
-                <ShieldAlert className="w-10 h-10 text-amber-400 mb-3" />
+                <ShieldAlert className="w-10 h-10 text-amber-600 dark:text-amber-400 mb-3" />
                 <h2 className="text-lg font-semibold text-cf-text mb-2">Access restricted</h2>
                 <p className="text-cf-text-muted text-sm mb-1">
                   The email <span className="text-cf-text font-medium">{email}</span>
@@ -344,7 +344,7 @@ export default function LoginPage() {
 
                 {accessRequested ? (
                   <>
-                    <div className="flex items-center gap-2 text-green-400 text-sm py-2.5">
+                    <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm py-2.5">
                       <CheckCircle2 className="w-4 h-4" />
                       Request sent to administrator
                     </div>
@@ -367,7 +367,7 @@ export default function LoginPage() {
                   <button
                     onClick={handleRequestAccess}
                     disabled={loading}
-                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                   >
                     {loading ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -378,7 +378,7 @@ export default function LoginPage() {
                 )}
 
                 {error && (
-                  <p role="alert" className="text-red-400 text-sm mt-3">{error}</p>
+                  <p role="alert" className="text-red-600 dark:text-red-400 text-sm mt-3">{error}</p>
                 )}
               </div>
             </>
@@ -400,7 +400,7 @@ export default function LoginPage() {
               </p>
 
               {message && (
-                <p className="text-green-400 text-sm mb-4">{message}</p>
+                <p className="text-green-600 dark:text-green-400 text-sm mb-4">{message}</p>
               )}
 
               <form onSubmit={handleVerifyOTP}>
@@ -427,13 +427,13 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p role="alert" className="text-red-400 text-sm mb-4 text-center">{error}</p>
+                  <p role="alert" className="text-red-600 dark:text-red-400 text-sm mb-4 text-center">{error}</p>
                 )}
 
                 <button
                   type="submit"
                   disabled={loading || code.some(d => d === '')}
-                  className="w-full py-2.5 bg-cf-primary hover:bg-cf-primary/90 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                  className="w-full py-2.5 bg-cf-primary hover:bg-cf-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   {loading ? (
                     <Loader2 className="w-4 h-4 animate-spin" />

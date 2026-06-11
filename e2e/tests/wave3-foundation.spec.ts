@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { injectAuth } from './_fixtures/auth'  // КАО#R4-S14
 
 /**
  * Round 14 — Team 1 (Test-Writer): Wave 1-3 Foundation / Cross-cutting specs.
@@ -21,10 +22,8 @@ import { test, expect } from '@playwright/test'
 const needsAuth = () => test.skip(!process.env.E2E_AUTH_TOKEN, 'needs auth')
 
 async function attachAuthIfAvailable(page: import('@playwright/test').Page) {
-  const token = process.env.E2E_AUTH_TOKEN
-  if (token) {
-    await page.addInitScript((t) => localStorage.setItem('codeforge_token', t), token)
-  }
+  // КАО#R4-S14 — httpOnly cookie via the shared fixture (no-op without token).
+  await injectAuth(page.context())
 }
 
 /* ─────────────────────────────────────────────────────────────

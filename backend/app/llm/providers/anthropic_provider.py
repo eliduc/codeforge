@@ -121,7 +121,11 @@ class AnthropicProvider(BaseLLMProvider):
     # Pricing per 1M tokens (input, output, thinking).
     # Kept as a fallback when models.dev registry enrichment is unavailable.
     PRICING = {
-        # Claude 4.6 family (latest)
+        # КАО#R4-M17/S10 — 4.7/4.8 flagships were missing → calculate_cost
+        # returned $0.00 for every session using them (models.dev: $5/$25).
+        "claude-opus-4-8": (5.00, 25.00, 25.00),
+        "claude-opus-4-7": (5.00, 25.00, 25.00),
+        # Claude 4.6 family
         "claude-opus-4-6": (5.00, 25.00, 25.00),
         "claude-sonnet-4-6": (3.00, 15.00, 15.00),
         # Claude 4.5 family
@@ -306,6 +310,9 @@ class AnthropicProvider(BaseLLMProvider):
                     if result:
                         self._fetched_models = result
                         logger.info(f"Anthropic: found {len(result)} models: {result}")
+                        # КАО#R4-S10 — enrich the sync cost path with registry
+                        # prices for the discovered models (best-effort).
+                        await self.refresh_registry_pricing("anthropic", result)
 
                     return True
                 else:
@@ -686,7 +693,11 @@ class AnthropicProvider(BaseLLMProvider):
             create_kwargs["system"] = system_prompt
 
         # Thinking config (mirrors generate)
-        if self._supports_adaptive_thinking(model):
+        # КАО#R4-M20 — honour the runtime thinking-unsupported cache here too;
+        # without it every stream call for a cached model paid one failed attempt.
+        if model in _thinking_unsupported_models:
+            create_kwargs["temperature"] = temperature
+        elif self._supports_adaptive_thinking(model):
             if thinking_effort and thinking_effort != "none":
                 create_kwargs["thinking"] = {"type": "adaptive"}
                 effort_map = {"low": "low", "medium": "medium", "high": "high", "max": "max"}
@@ -717,15 +728,42 @@ class AnthropicProvider(BaseLLMProvider):
 
         try:
             full_text = ""
-            async with self.client.messages.stream(**create_kwargs) as stream:
-                async for delta in stream.text_stream:
-                    full_text += delta
-                    try:
-                        await on_chunk(delta)
-                    except Exception as cb_err:  # noqa: BLE001
-                        # A failing UI callback must not abort the LLM call.
-                        logger.warning(f"Streaming on_chunk callback raised: {cb_err}")
-                message = await stream.get_final_message()
+            try:
+                async with self.client.messages.stream(**create_kwargs) as stream:
+                    async for delta in stream.text_stream:
+                        full_text += delta
+                        try:
+                            await on_chunk(delta)
+                        except Exception as cb_err:  # noqa: BLE001
+                            # A failing UI callback must not abort the LLM call.
+                            logger.warning(f"Streaming on_chunk callback raised: {cb_err}")
+                    message = await stream.get_final_message()
+            except Exception as thinking_err:  # noqa: BLE001
+                # КАО#R4-M20 — mirror generate(): on a thinking-unsupported 400,
+                # cache the model and retry ONCE without thinking instead of
+                # failing the stream call.
+                if (
+                    ("thinking" in create_kwargs or "output_config" in create_kwargs)
+                    and _is_thinking_unsupported_error(thinking_err)
+                ):
+                    _thinking_unsupported_models.add(model)
+                    logger.warning(
+                        f"{model}: thinking unsupported on stream — retrying without thinking"
+                    )
+                    create_kwargs.pop("thinking", None)
+                    create_kwargs.pop("output_config", None)
+                    create_kwargs.setdefault("temperature", temperature)
+                    full_text = ""
+                    async with self.client.messages.stream(**create_kwargs) as stream:
+                        async for delta in stream.text_stream:
+                            full_text += delta
+                            try:
+                                await on_chunk(delta)
+                            except Exception as cb_err:  # noqa: BLE001
+                                logger.warning(f"Streaming on_chunk callback raised: {cb_err}")
+                        message = await stream.get_final_message()
+                else:
+                    raise
 
             latency_ms = int((time.time() - start_time) * 1000)
 

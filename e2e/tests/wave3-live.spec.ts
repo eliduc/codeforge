@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { injectAuth as injectCookieAuth } from './_fixtures/auth'  // КАО#R4-S14
 
 /**
  * Round 14 — Team 1 (Test-Writer): Wave 1–3 Live Session UI specs.
@@ -22,17 +23,11 @@ import { test, expect } from '@playwright/test'
  * Failures here are bugs for Team 3. We do NOT fix from this seat.
  */
 
-const TOKEN_KEY = 'codeforge_token'
 const LOCK_KEY = 'codeforge.session.lockViewport'
 
-/** Inject the auth token into localStorage so SessionDetailPage skips redirect. */
+/** КАО#R4-S14 — auth rides the httpOnly codeforge_session cookie now. */
 async function seedAuth(page: import('@playwright/test').Page) {
-  const token = process.env.E2E_AUTH_TOKEN!
-  // Need to be on an origin first before we can touch localStorage.
-  await page.goto('/login')
-  await page.evaluate(([k, v]) => {
-    window.localStorage.setItem(k, v)
-  }, [TOKEN_KEY, token])
+  await injectCookieAuth(page.context())
 }
 
 /** Navigate to the configured test session, waiting for the header to land. */

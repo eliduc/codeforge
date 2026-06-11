@@ -85,14 +85,16 @@ class GoogleProvider(BaseLLMProvider):
 
 
     # Pricing per 1M tokens (input, output)
+    # КАО#R4-M17 — corrected to models.dev list prices (2026-06-10); the old rows
+    # were pre-July-2025 (2.5-flash 4-8× under) and gemini-3 inherited 2.5 prices.
     PRICING = {
         # Gemini 3 family (latest, preview)
-        "gemini-3-pro": (1.25, 5.00),
-        "gemini-3-flash": (0.15, 0.60),
+        "gemini-3-pro": (2.00, 12.00),
+        "gemini-3-flash": (0.50, 3.00),
         # Gemini 2.5 family (stable)
-        "gemini-2.5-pro": (1.25, 5.00),
-        "gemini-2.5-flash": (0.15, 0.60),
-        "gemini-2.5-flash-lite": (0.02, 0.10),
+        "gemini-2.5-pro": (1.25, 10.00),
+        "gemini-2.5-flash": (0.30, 2.50),
+        "gemini-2.5-flash-lite": (0.10, 0.40),
         # Gemini 2.0 (deprecated March 2026)
         "gemini-2.0-flash": (0.10, 0.40),
         "gemini-2.0-flash-lite": (0.02, 0.10),
@@ -278,6 +280,8 @@ class GoogleProvider(BaseLLMProvider):
 
             logger.info(f"Google: found {len(result)} models: {result}")
             self._fetched_models = result if result else self.CODE_MODELS
+            # КАО#R4-S10 — enrich the sync cost path (best-effort).
+            await self.refresh_registry_pricing("google", self._fetched_models)
             return True
 
         except Exception as e:
@@ -324,8 +328,11 @@ class GoogleProvider(BaseLLMProvider):
                     budget = self.THINKING_BUDGET_MAP.get(thinking_effort, 8000)
                     config["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
                 elif thinking_effort == "none":
-                    # Explicitly disabled
-                    config["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+                    # Explicitly disabled. КАО#R4-M19 — Pro-tier Gemini cannot
+                    # fully disable thinking (min budget 128); sending 0 is a
+                    # 400. Clamp to the minimum there, keep 0 for Flash.
+                    _min_budget = 128 if "pro" in model.lower() else 0
+                    config["thinking_config"] = types.ThinkingConfig(thinking_budget=_min_budget)
                     config["temperature"] = temperature
                 elif use_thinking:
                     # Legacy flag: default budget

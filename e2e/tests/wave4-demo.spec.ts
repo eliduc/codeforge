@@ -29,6 +29,7 @@
  * test.skip()'d when E2E_AUTH_TOKEN is missing.
  */
 import { test, expect, type Page } from '@playwright/test'
+import { injectAuth as injectCookieAuth } from './_fixtures/auth'  // КАО#R4-M26
 
 // Per-template metadata used by the multi-template loop.
 interface TemplateInfo {
@@ -89,16 +90,11 @@ async function readClock(page: Page): Promise<number> {
   return parseFloat(text.replace('s', '').trim())
 }
 
-/** Inject a fake auth token before the page boots — so PublicChrome renders
- *  the full Layout (sidebar) instead of the minimal anon header. */
+/** КАО#R4-M26 — the app ignores (and purges) the legacy localStorage token
+ *  since SG1; use the shared httpOnly-cookie fixture (no-op without a token,
+ *  in which case the page simply renders the anonymous chrome). */
 async function injectFakeAuth(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    try {
-      localStorage.setItem('codeforge_token', 'eyJhbGciOiJIUzI1NiJ9.fake.fake')
-    } catch {
-      /* ignore */
-    }
-  })
+  await injectCookieAuth(page.context())
 }
 
 // ─── 1–5. Multi-template playback ────────────────────────────────────────────
@@ -195,14 +191,9 @@ test.describe('Wave-4 Demo — Keyboard edge cases', () => {
     // visitors are redirected to /login. Skip when no auth token available.
     test.skip(!process.env.E2E_AUTH_TOKEN, 'ConfirmDialog requires auth (anon → /login per R14-FIX-01)')
 
-    // Inject the real auth token so the Try-it dialog actually opens.
-    await page.addInitScript((token) => {
-      try {
-        localStorage.setItem('codeforge_token', token as string)
-      } catch {
-        /* ignore */
-      }
-    }, process.env.E2E_AUTH_TOKEN)
+    // КАО#R4-M26 — real auth via the httpOnly cookie fixture (the legacy
+    // localStorage token is ignored, so /api/auth/me 200 could never fire).
+    await injectCookieAuth(page.context())
 
     // КАО W4: AuthStore.loadFromStorage() is async — calls /api/auth/me to
     // validate the injected token. Until it resolves, `isAuthenticated` is

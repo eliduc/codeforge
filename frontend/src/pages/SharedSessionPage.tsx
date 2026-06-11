@@ -115,10 +115,10 @@ export default function SharedSessionPage() {
             </div>
             <div>
               <div className="text-sm font-bold text-white tracking-tight">CodeForge</div>
-              <div className="text-[10px] text-gray-500 -mt-0.5">shared session</div>
+              <div className="text-[10px] text-gray-400 -mt-0.5">shared session</div>
             </div>
           </Link>
-          <div className="text-xs text-gray-500">Read-only public view</div>
+          <div className="text-xs text-gray-400">Read-only public view</div>
         </div>
       </header>
 
@@ -150,7 +150,7 @@ export default function SharedSessionPage() {
               <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
                   <h1 className="text-2xl sm:text-3xl font-bold text-white">{session.name}</h1>
-                  <div className="text-xs text-gray-500 mt-1">
+                  <div className="text-xs text-gray-400 mt-1">
                     Created {formatDate(session.created_at)}
                     {session.language ? <> • {session.language}</> : null}
                   </div>
@@ -197,7 +197,7 @@ export default function SharedSessionPage() {
                     {session.specification}
                   </pre>
                 ) : (
-                  <span className="text-sm text-gray-500 italic">No specification provided.</span>
+                  <span className="text-sm text-gray-400 italic">No specification provided.</span>
                 )}
               </div>
             </section>
@@ -232,7 +232,7 @@ export default function SharedSessionPage() {
                     {session.final_code}
                   </pre>
                 ) : (
-                  <div className="p-4 text-sm text-gray-500 italic">
+                  <div className="p-4 text-sm text-gray-400 italic">
                     No final code yet — this session has not produced a final result.
                   </div>
                 )}
@@ -244,7 +244,7 @@ export default function SharedSessionPage() {
 
       {/* Footer */}
       <footer className="border-t border-gray-800 bg-gray-900/60 mt-8">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-500">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-400">
           <div>
             Powered by <span className="text-gray-300 font-medium">CodeForge</span>
           </div>
@@ -252,7 +252,7 @@ export default function SharedSessionPage() {
             href="https://gotcode.ai"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-gray-500 hover:text-indigo-400 transition-colors"
+            className="text-gray-400 hover:text-indigo-400 transition-colors"
           >
             gotcode.ai
           </a>

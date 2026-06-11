@@ -134,6 +134,7 @@ test.describe('Full-A1 · /login (public)', () => {
     await context.addInitScript(() => {
       try {
         localStorage.removeItem('codeforge_token')
+        localStorage.removeItem('codeforge_authed')  // КАО#R4-M27 — no hint => app boots anonymous, no cookie-less /me probe
         sessionStorage.clear()
       } catch {
         /* storage may be inaccessible in some contexts */

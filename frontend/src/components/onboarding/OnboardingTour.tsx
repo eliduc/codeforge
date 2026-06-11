@@ -348,6 +348,11 @@ export default function OnboardingTour() {
     }
   }, [
     location.pathname,
+    // КАО#R4-S3 — location.key changes on EVERY navigation, including same-path
+    // (e.g. "Restart tour" from /sessions while already on /sessions). Without
+    // it the decide-effect never re-ran, so restarting the tour from the
+    // default landing page silently did nothing.
+    location.key,
     isAuthenticated,
     authDisabled,
     authLoading,
@@ -360,10 +365,11 @@ export default function OnboardingTour() {
   ])
 
   // Reset the per-mount guard set when route changes so the user can re-trigger
-  // tours after resetting them via the user menu.
+  // tours after resetting them via the user menu. КАО#R4-S3 — keyed on
+  // location.key so a same-path navigation also clears the guard.
   useEffect(() => {
     firedThisMountRef.current = new Set()
-  }, [location.pathname])
+  }, [location.pathname, location.key])
 
   // Улучшатели#1 P2·M — Tour starts before DOM targets exist.
   // Wraps steps with custom onPopoverRender for the Welcome tour's final step

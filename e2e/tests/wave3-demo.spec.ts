@@ -14,7 +14,7 @@ import { test, expect, Page } from '@playwright/test'
 // Spec said `/demo-player/mandelbulb` but the actual route in App.tsx is
 // `/demo/:templateId`. Using the real path.
 const DEMO_URL = '/demo/mandelbulb'
-const CRYSTAL_URL = '/demo/crystal'
+const CRYSTAL_URL = '/demo/particles'  // КАО#R4-S13 — crystal removed; particles is the current 5th demo
 const DURATION = 162
 
 /** Wait for the demo player UI to be ready: TOUR plaque + React Flow graph. */
@@ -167,7 +167,7 @@ test.describe('Wave 1–3 — Demo Player (mandelbulb)', () => {
     await page.locator('body').click({ position: { x: 5, y: 5 } })
     await page.keyboard.press('End')
 
-    const cta = page.locator('[role="dialog"][aria-label="What next"]')
+    const cta = page.locator('[role="region"][aria-label="Demo complete — what next"]')
     await expect(cta).toBeVisible({ timeout: 10_000 })
     await expect(cta.getByRole('button', { name: /View final result/i })).toBeVisible()
     await expect(cta.getByRole('button', { name: /Try it yourself/i })).toBeVisible()
@@ -183,7 +183,7 @@ test.describe('Wave 1–3 — Demo Player (mandelbulb)', () => {
     await page.locator('body').click({ position: { x: 5, y: 5 } })
     await page.keyboard.press('End')
 
-    const cta = page.locator('[role="dialog"][aria-label="What next"]')
+    const cta = page.locator('[role="region"][aria-label="Demo complete — what next"]')
     await expect(cta).toBeVisible({ timeout: 10_000 })
     await cta.getByRole('button', { name: /Copy link/i }).click()
 
@@ -236,12 +236,12 @@ test.describe('Wave 1–3 — Demo Player (mandelbulb)', () => {
     await page.keyboard.press('End')
 
     // Wait for the post-completion CTA to confirm finished.
-    await expect(page.locator('[role="dialog"][aria-label="What next"]'))
+    await expect(page.locator('[role="region"][aria-label="Demo complete — what next"]'))
       .toBeVisible({ timeout: 10_000 })
 
     // Switch to Final result tab. Use exact match so we don't ambiguously hit
     // the "▶ View final result" button inside the post-completion CTA.
-    await page.getByRole('button', { name: 'Final result', exact: true }).click()
+    await page.getByRole('tab', { name: 'Final result' }).click()  // КАО#R4-S13 — R3-M4 made it a tab
 
     const iframe = page.locator('iframe[title="Demo final result"]')
     await expect(iframe).toBeVisible({ timeout: 10_000 })
@@ -261,7 +261,7 @@ test.describe('Wave 1–3 — Demo Player (mandelbulb)', () => {
     expect(earlyClock).toBeLessThan(20)
 
     // Switch to Final result tab — placeholder + Skip-to-result button.
-    await page.getByRole('button', { name: /Final result/i }).click()
+    await page.getByRole('tab', { name: /Final result/i }).click()  // КАО#R4-S13
 
     const skipBtn = page.getByRole('button', { name: /Skip to result/i })
     await expect(skipBtn).toBeVisible({ timeout: 5_000 })

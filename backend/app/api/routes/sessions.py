@@ -960,6 +960,7 @@ async def _create_session_from_data(
             custom_prompt=ac.get("custom_prompt"),
             temperature=ac.get("temperature", 0.7),
             max_tokens=ac.get("max_tokens", 64000),
+            thinking_effort=ac.get("thinking_effort"),  # КАО#R4-M11
             enabled=ac.get("enabled", True),
         ))
 
@@ -1421,6 +1422,7 @@ async def create_session(
                 custom_prompt=config_data.custom_prompt,
                 temperature=config_data.temperature,
                 max_tokens=config_data.max_tokens,
+                thinking_effort=config_data.thinking_effort,  # КАО#R4-M11
             )
             db.add(config)
     else:
@@ -2026,7 +2028,9 @@ async def resume_session(
                 sid = str(session_id)
                 await session_manager.register_orchestrator(sid, orchestrator)
                 try:
-                    await orchestrator.run()
+                    # КАО#R4-M14 — post-restart resume: restore persisted work
+                    # instead of re-running the whole pipeline from iteration 1.
+                    await orchestrator.run(resume_from_db=True)
                 finally:
                     await session_manager.unregister_orchestrator(sid)
 
@@ -3323,6 +3327,11 @@ async def apply_enhancements(
         auto_install_deps=session.auto_install_deps,
         agent_timeout=session.agent_timeout,
         request_timeout=session.request_timeout,
+        # КАО#R4-M11 — the enhancement child silently dropped the parent's cost
+        # cap, time budget and expected output; carry them over.
+        cost_limit_usd=session.cost_limit_usd,
+        session_timeout_sec=session.session_timeout_sec,
+        expected_output=session.expected_output,
         settings=session.settings or {},
         parent_session_id=session_id,
         enhancement_round=enhancement_round,
@@ -3347,6 +3356,8 @@ async def apply_enhancements(
             custom_prompt=config.custom_prompt,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            thinking_effort=config.thinking_effort,  # КАО#R4-M11
+            enabled=config.enabled,  # КАО#R4-M11
         )
         db.add(new_config)
 

@@ -1,5 +1,7 @@
 # Sandbox Executor Service Dependencies
-fastapi==0.109.0
-uvicorn==0.27.0
-pydantic==2.5.3
+# КАО#R4-S4sug — keep these pins identical to the common-packages layer in
+# sandbox/Dockerfile so the later pip install doesn't silently downgrade them.
+fastapi==0.110.0
+uvicorn==0.27.1
+pydantic==2.6.1
 psutil==5.9.8

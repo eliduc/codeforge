@@ -607,11 +607,12 @@ export default function NewSessionPage() {
                 }}
                 className={fieldErrors.iterations ? inputErr : inputOk}
                 aria-invalid={Boolean(fieldErrors.iterations)}
+                aria-describedby={fieldErrors.iterations ? 'iter-error' : 'iter-help'}
               />
               {fieldErrors.iterations ? (
-                <p className="mt-1 text-xs text-cf-error">{fieldErrors.iterations}</p>
+                <p id="iter-error" className="mt-1 text-xs text-cf-error">{fieldErrors.iterations}</p>
               ) : (
-                <p className="mt-1 text-xs text-cf-text-muted">1–10 (default 3)</p>
+                <p id="iter-help" className="mt-1 text-xs text-cf-text-muted">1–10 (default 3)</p>
               )}
             </div>
             <div>
@@ -636,11 +637,12 @@ export default function NewSessionPage() {
                 }}
                 className={fieldErrors.coders ? inputErr : inputOk}
                 aria-invalid={Boolean(fieldErrors.coders)}
+                aria-describedby={fieldErrors.coders ? 'coders-error' : 'coders-help'}
               />
               {fieldErrors.coders ? (
-                <p className="mt-1 text-xs text-cf-error">{fieldErrors.coders}</p>
+                <p id="coders-error" className="mt-1 text-xs text-cf-error">{fieldErrors.coders}</p>
               ) : (
-                <p className="mt-1 text-xs text-cf-text-muted">1–4 (default 2)</p>
+                <p id="coders-help" className="mt-1 text-xs text-cf-text-muted">1–4 (default 2)</p>
               )}
             </div>
             <div>
@@ -665,11 +667,12 @@ export default function NewSessionPage() {
                 }}
                 className={fieldErrors.testers ? inputErr : inputOk}
                 aria-invalid={Boolean(fieldErrors.testers)}
+                aria-describedby={fieldErrors.testers ? 'testers-error' : 'testers-help'}
               />
               {fieldErrors.testers ? (
-                <p className="mt-1 text-xs text-cf-error">{fieldErrors.testers}</p>
+                <p id="testers-error" className="mt-1 text-xs text-cf-error">{fieldErrors.testers}</p>
               ) : (
-                <p className="mt-1 text-xs text-cf-text-muted">1–4 (default 2)</p>
+                <p id="testers-help" className="mt-1 text-xs text-cf-text-muted">1–4 (default 2)</p>
               )}
             </div>
           </div>

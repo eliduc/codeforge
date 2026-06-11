@@ -78,7 +78,7 @@ async def _auto_resume_session(session_id) -> None:
             )
             await session_manager.register_orchestrator(sid, orchestrator)
             try:
-                await orchestrator.run()
+                await orchestrator.run(resume_from_db=True)  # КАО#R4-M14 — restore persisted work, don't re-run from iteration 1
             finally:
                 await session_manager.unregister_orchestrator(sid)
     except Exception as e:

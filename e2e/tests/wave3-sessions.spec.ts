@@ -11,18 +11,15 @@
 //     npx playwright test tests/wave3-sessions.spec.ts --reporter=list
 
 import { test, expect, type Page } from '@playwright/test'
+import { injectAuth as injectCookieAuth } from './_fixtures/auth'  // КАО#R4-S14
 
 const AUTH_TOKEN = process.env.E2E_AUTH_TOKEN
 const requireAuth = () => test.skip(!AUTH_TOKEN, 'needs E2E_AUTH_TOKEN')
 
 async function injectAuth(page: Page) {
-  await page.addInitScript((token) => {
-    try {
-      localStorage.setItem('codeforge_token', token)
-    } catch {
-      // ignore storage failures (private mode, etc.)
-    }
-  }, AUTH_TOKEN as string)
+  // КАО#R4-S14 — the app ignores the legacy localStorage token since SG1;
+  // auth now rides the httpOnly codeforge_session cookie.
+  await injectCookieAuth(page.context())
 }
 
 // ───────────────────────────────────────────────────────────────────────────────

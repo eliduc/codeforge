@@ -1,14 +1,12 @@
 import { test, expect } from '@playwright/test'
+import { injectAuth } from './_fixtures/auth'  // КАО#R4-S14
 
 test.describe('Sessions page', () => {
   test.beforeEach(async ({ page, context }) => {
     // Set auth token if provided
     const token = process.env.E2E_AUTH_TOKEN
     if (!token) test.skip()
-    await context.addCookies([])
-    await page.addInitScript((t) => {
-      localStorage.setItem('codeforge_token', t)
-    }, token)
+    await injectAuth(context)  // КАО#R4-S14 — httpOnly cookie (legacy localStorage token is purged by the app)
     await page.goto('/sessions')
   })
 

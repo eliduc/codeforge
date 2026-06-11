@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test'
+import { injectAuth } from './_fixtures/auth'  // КАО#R4-S14 — httpOnly cookie auth
 
 test.describe('Dashboard', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
     const token = process.env.E2E_AUTH_TOKEN
     if (!token) test.skip()
-    await page.addInitScript((t) => localStorage.setItem('codeforge_token', t), token)
+    await injectAuth(context)  // КАО#R4-S14 — the app ignores (and purges) the legacy localStorage token
     await page.goto('/dashboard')
   })
 

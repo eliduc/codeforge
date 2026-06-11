@@ -747,7 +747,7 @@ export default function SessionsPage() {
                       {t.description && (
                         <div className="text-sm text-gray-400 truncate">{t.description}</div>
                       )}
-                      <div className="text-xs text-gray-500 mt-0.5">
+                      <div className="text-xs text-gray-400 mt-0.5">
                         {t.language} · {t.agent_configs?.length || 0} agents · max {t.max_iterations} iters
                       </div>
                     </div>
@@ -847,7 +847,7 @@ export default function SessionsPage() {
                 )}
                 <p
                   className={`text-xs ml-auto ${
-                    applySpec.trim().length < APPLY_SPEC_MIN_LENGTH ? 'text-gray-500' : 'text-gray-400'
+                    applySpec.trim().length < APPLY_SPEC_MIN_LENGTH ? 'text-gray-400' : 'text-gray-300'
                   }`}
                   aria-live="polite"
                 >
@@ -928,12 +928,26 @@ export default function SessionsPage() {
               const isEmpty = status !== 'all' && count === 0
               // Улучшатели#2 P1·M — muted style for zero-count pills so they stay clickable
               // but don't compete visually with non-empty statuses.
+              // КАО#R4-M2 — active pills need their own light-theme classes; the
+              // statusColors map is dark-tuned (text-*-300 is unreadable on light).
+              const activePillColors: Record<string, string> = {
+                created: 'bg-gray-200 text-gray-700 border-gray-400 dark:bg-gray-500/15 dark:text-gray-300 dark:border-gray-500/40',
+                running: 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/30 dark:text-blue-300 dark:border-blue-500/50',
+                paused: 'bg-yellow-100 text-yellow-700 border-yellow-300 dark:bg-yellow-500/20 dark:text-yellow-300 dark:border-yellow-500/50',
+                completed: 'bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-300 dark:border-green-500/50',
+                failed: 'bg-red-100 text-red-700 border-red-300 dark:bg-red-500/30 dark:text-red-300 dark:border-red-500/50',
+                cancelled: 'bg-gray-200 text-gray-700 border-gray-400 dark:bg-gray-500/20 dark:text-gray-300 dark:border-gray-500/40',
+                awaiting_enhancement: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/50',
+                enhancing: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/50',
+                awaiting_enhancement_review: 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/50',
+                awaiting_visual_review: 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/50',
+              }
               const colorClass = status === 'all'
                 ? (isActive
                     ? 'bg-indigo-100 text-indigo-700 border-indigo-300 dark:bg-indigo-500/30 dark:text-indigo-200 dark:border-indigo-500/50'
                     : 'bg-cf-panel text-cf-text-muted border-cf-border hover:border-cf-text-muted dark:bg-gray-700/50 dark:text-gray-400 dark:border-gray-600 dark:hover:border-gray-500')
                 : (isActive
-                  ? (statusColors[status] || 'bg-gray-500/20 text-gray-400') + ' border-current'
+                  ? (activePillColors[status] || 'bg-gray-200 text-gray-700 border-gray-400 dark:bg-gray-500/20 dark:text-gray-300 dark:border-gray-500/40')
                   : isEmpty
                     ? 'bg-cf-bg text-cf-text-muted border-cf-border hover:border-cf-text-muted dark:bg-gray-800/40 dark:text-gray-600 dark:border-gray-700/60 dark:hover:border-gray-600 dark:hover:text-gray-400'
                     : 'bg-cf-panel text-cf-text-muted border-cf-border hover:border-cf-text-muted dark:bg-gray-700/50 dark:text-gray-400 dark:border-gray-600 dark:hover:border-gray-500')
@@ -1061,9 +1075,9 @@ export default function SessionsPage() {
                   >
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-1">
-                        <h3 className="text-lg font-semibold text-white group-hover:text-indigo-400 transition-colors truncate">
+                        <h2 className="text-lg font-semibold text-white group-hover:text-indigo-400 transition-colors truncate">{/* КАО#R4-M5 h3->h2 */}
                           {session.name}
-                        </h3>
+                        </h2>
                         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[session.status] || 'bg-gray-500/20 text-gray-400'}`}>
                           {statusIcons[session.status]}
                           {statusLabels[session.status] || session.status}
@@ -1092,12 +1106,12 @@ export default function SessionsPage() {
                           Created {session.created_at ? formatDate(session.created_at) : 'Unknown'}
                         </span>
                         {session.total_tokens != null && session.total_tokens > 0 && (
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-gray-400">
                             {session.total_tokens.toLocaleString()} tokens
                           </span>
                         )}
                         {session.total_cost != null && session.total_cost > 0 && (
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-gray-400">
                             ${session.total_cost.toFixed(3)}
                           </span>
                         )}
@@ -1392,7 +1406,7 @@ export default function SessionsPage() {
                   {importCheckResult.duplicates.map((d, i) => (
                     <li key={i} className="text-gray-300 text-sm bg-gray-700/50 px-3 py-2 rounded">
                       <div className="font-medium">{d.name}</div>
-                      <div className="text-gray-500 text-xs mt-0.5 truncate">{d.specification_preview}</div>
+                      <div className="text-gray-400 text-xs mt-0.5 truncate">{d.specification_preview}</div>
                     </li>
                   ))}
                 </ul>
@@ -1408,14 +1422,14 @@ export default function SessionsPage() {
                   {importCheckResult.new_sessions.map((s, i) => (
                     <li key={i} className="text-gray-300 text-sm bg-gray-700/50 px-3 py-2 rounded">
                       <div className="font-medium">{s.name}</div>
-                      <div className="text-gray-500 text-xs mt-0.5 truncate">{s.specification_preview}</div>
+                      <div className="text-gray-400 text-xs mt-0.5 truncate">{s.specification_preview}</div>
                     </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            <p className="text-xs text-cf-text-muted mt-2">
+            <p className="text-xs text-gray-400 mt-2">{/* КАО#R4-M3 — fixed dark dialog */}
               Duplicate session names will be imported with "(Copy)" suffix appended.
             </p>
 

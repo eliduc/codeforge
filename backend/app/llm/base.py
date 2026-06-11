@@ -46,6 +46,28 @@ class BaseLLMProvider(ABC):
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key
         self.base_url = base_url
+        # КАО#R4-S10 — per-model prices enriched from the models.dev registry at
+        # model-discovery time; consulted by calculate_cost BEFORE the hardcoded
+        # PRICING fallback so newly released models never cost $0.00.
+        self._registry_pricing: dict[str, tuple[float, ...]] = {}
+
+    async def refresh_registry_pricing(self, provider_id: str, model_ids: list[str]) -> None:
+        """КАО#R4-S10 — best-effort enrichment of the sync cost path.
+
+        Called from is_available() (already async) after model discovery. Any
+        registry failure leaves the hardcoded PRICING fallback in charge.
+        """
+        try:
+            from app.llm import registry as model_registry
+            for mid in model_ids:
+                try:
+                    p = await model_registry.get_pricing(provider_id, mid)
+                    if p:
+                        self._registry_pricing[mid] = p
+                except Exception:  # noqa: BLE001 — one bad model must not stop the rest
+                    continue
+        except Exception:  # noqa: BLE001 — registry entirely unavailable
+            pass
 
     @property
     @abstractmethod
@@ -134,15 +156,21 @@ class BaseLLMProvider(ABC):
     ) -> float:
         """Calculate the cost of a request in USD."""
         pricing = None
-        # Try exact match first
-        if model in self.PRICING:
+        # КАО#R4-S10 — registry-enriched exact match first, then the hardcoded table.
+        if model in self._registry_pricing:
+            pricing = self._registry_pricing[model]
+        elif model in self.PRICING:
             pricing = self.PRICING[model]
         else:
-            # Try to find matching base model (handle variants like gpt-5.2-chat-latest -> gpt-5.2)
+            # Prefix match for variants (gpt-5.2-chat-latest -> gpt-5.2).
+            # КАО#R4-M17 — LONGEST prefix first, so cheaper variants
+            # (gpt-5-nano) never inherit the flagship's (gpt-5) price.
             model_lower = model.lower()
-            for pricing_model in self.PRICING:
+            for pricing_model in sorted(
+                set(self.PRICING) | set(self._registry_pricing), key=len, reverse=True
+            ):
                 if model_lower.startswith(pricing_model.lower()):
-                    pricing = self.PRICING[pricing_model]
+                    pricing = self._registry_pricing.get(pricing_model) or self.PRICING.get(pricing_model)
                     break
 
         if pricing is None:

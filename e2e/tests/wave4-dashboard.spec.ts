@@ -197,8 +197,9 @@ test.describe('Wave 4 — Dashboard', () => {
     await page.goto('/dashboard')
     const card = page.locator('[data-testid="dashboard-welcome-card"]')
     const hasSessions = await page.evaluate(async () => {
-      const t = localStorage.getItem('codeforge_token') ?? ''
-      const r = await fetch('/api/sessions/?limit=1', { headers: { Authorization: `Bearer ${t}` } })
+      // КАО#R4-S6sug — the httpOnly cookie rides same-origin fetches; the
+      // legacy localStorage token is always empty post-SG1.
+      const r = await fetch('/api/sessions/?limit=1')
       if (!r.ok) return false
       const j = await r.json()
       return ((j.items ?? j) as unknown[]).length > 0
@@ -219,8 +220,9 @@ test.describe('Wave 4 — Dashboard', () => {
   test('7. recent sessions list shows up to 5 most recent sessions and links to detail', async ({ page }) => {
     await page.goto('/dashboard')
     const hasSessions = await page.evaluate(async () => {
-      const t = localStorage.getItem('codeforge_token') ?? ''
-      const r = await fetch('/api/sessions/?limit=1', { headers: { Authorization: `Bearer ${t}` } })
+      // КАО#R4-S6sug — the httpOnly cookie rides same-origin fetches; the
+      // legacy localStorage token is always empty post-SG1.
+      const r = await fetch('/api/sessions/?limit=1')
       if (!r.ok) return false
       const j = await r.json()
       return ((j.items ?? j) as unknown[]).length > 0

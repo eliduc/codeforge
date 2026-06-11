@@ -243,7 +243,9 @@ export default function Layout({ children }: LayoutProps) {
           className="w-full text-left px-3 py-2 text-sm text-cf-text hover:bg-cf-border transition-colors flex items-center gap-2"
         >
           <Keyboard className="w-4 h-4 text-cf-text-muted" />
-          Keyboard shortcuts
+          {/* КАО#R4-S1sug — it opens the command palette (no shortcuts list) */}
+          Command palette
+          <kbd className="ml-auto text-[10px] text-cf-text-muted border border-cf-border rounded px-1">⌘K</kbd>
         </button>
         <button
           role="menuitem"
@@ -463,8 +465,8 @@ export default function Layout({ children }: LayoutProps) {
             <button
               onClick={openCommandPalette}
               className="p-2 rounded-lg text-cf-text-muted hover:text-cf-text hover:bg-cf-border transition-colors w-full flex justify-center"
-              aria-label="Keyboard shortcuts"
-              title="Keyboard shortcuts (⌘K)"
+              aria-label="Command palette"
+              title="Command palette (⌘K)"
             >
               <HelpCircle className="w-4 h-4" />
             </button>

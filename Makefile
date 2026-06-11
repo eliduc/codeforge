@@ -19,7 +19,6 @@ help:
 # Docker commands
 build:
 	docker-compose build
-	docker-compose --profile build-only build sandbox
 
 up:
 	docker-compose up -d
@@ -73,6 +72,6 @@ setup: build
 	docker-compose up -d frontend
 	@echo ""
 	@echo "CodeForge is running!"
-	@echo "  Frontend: http://localhost:3100"
-	@echo "  Backend:  http://localhost:8100"
-	@echo "  API Docs: http://localhost:8100/docs"
+	@echo "  Frontend: http://localhost:3300"
+	@echo "  Backend:  http://localhost:8300"
+	@echo "  API Docs: http://localhost:8300/docs"

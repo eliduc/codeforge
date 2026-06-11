@@ -1044,9 +1044,9 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
               <select
                 id="agent-thinking-mode-select"
                 aria-label="Thinking mode"
-                value={thinkingEffort ? 'on' : 'off'}
+                value={thinkingEffort && thinkingEffort !== 'none' ? 'on' : 'off'}
                 disabled={!supportsThinking}
-                onChange={e => setThinkingEffort(e.target.value === 'on' ? defaultEffort : '')}
+                onChange={e => setThinkingEffort(e.target.value === 'on' ? defaultEffort : 'none')}
                 className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="off">{alwaysReasoning ? 'Auto' : 'Off'}</option>
@@ -1058,8 +1058,8 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
                 /* КАО#VR-58 — also require a non-empty levelOptions, else the
                    value (defaultEffort) wouldn't match the lone "—" option →
                    React out-of-range controlled-value warning. */
-                value={supportsThinking && levelOptions.length > 0 ? (thinkingEffort || defaultEffort) : ''}
-                disabled={!supportsThinking || !thinkingEffort}
+                value={supportsThinking && levelOptions.length > 0 ? (thinkingEffort && thinkingEffort !== 'none' ? thinkingEffort : defaultEffort) : ''}
+                disabled={!supportsThinking || !thinkingEffort || thinkingEffort === 'none' /* КАО#R4-M19b — 'none' is truthy; stay disabled when Off */}
                 onChange={e => setThinkingEffort(e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1090,7 +1090,7 @@ function AgentConfigPopup({ agentType, x, y, existingConfig, onClose, onSave }: 
             {/* VR-55/58 — reasoning model with thinking OFF: nudge to enable it,
                 since Opus/Sonnet without extended thinking is noticeably weaker
                 on hard code and the default here is Off. */}
-            {supportsThinking && !thinkingEffort && /opus|sonnet/i.test(model) && (
+            {supportsThinking && (!thinkingEffort || thinkingEffort === 'none') && /opus|sonnet/i.test(model) && (
               <div className="mt-1 text-[10px] text-amber-400 leading-tight">
                 ⚠ Thinking is off. {model} is a reasoning model — turn it On (Medium/High) for noticeably better code quality.
               </div>
@@ -5302,6 +5302,8 @@ export default function SessionDetailPage() {
 
       {/* Main content */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* КАО#R4-M5 — bridge the h1→h3 heading skip for AT users */}
+        <h2 className="sr-only">Session workspace</h2>
         {/* React Flow Graph */}
         <div
           ref={reactFlowContainerRef}

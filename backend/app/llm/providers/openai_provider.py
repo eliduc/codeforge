@@ -107,18 +107,22 @@ class OpenAIProvider(BaseLLMProvider):
 
     # Pricing per 1M tokens (input, output) or (input, output, reasoning).
     # Kept as fallback when models.dev registry enrichment is unavailable.
+    # КАО#R4-M17 — rows corrected to models.dev list prices (2026-06-10); the old
+    # table carried gpt-4.1-era numbers, and gpt-5-nano had no row so it
+    # prefix-matched the flagship "gpt-5" price (40× input overcount).
     PRICING = {
         # GPT-5.4 (latest flagship)
-        "gpt-5.4": (3.00, 12.00),
+        "gpt-5.4": (2.50, 15.00),
         # GPT-5.2
-        "gpt-5.2": (2.50, 10.00),
-        "gpt-5.2-codex": (2.50, 10.00),
+        "gpt-5.2": (1.75, 14.00),
+        "gpt-5.2-codex": (1.75, 14.00),
         # GPT-5.1
-        "gpt-5.1": (2.50, 10.00),
-        "gpt-5.1-codex": (2.50, 10.00),
+        "gpt-5.1": (1.25, 10.00),
+        "gpt-5.1-codex": (1.25, 10.00),
         # GPT-5 variants
-        "gpt-5": (2.00, 8.00),
-        "gpt-5-mini": (0.40, 1.60),
+        "gpt-5": (1.25, 10.00),
+        "gpt-5-mini": (0.25, 2.00),
+        "gpt-5-nano": (0.05, 0.40),
         # O-series reasoning models (input, output, reasoning)
         "o3": (2.00, 8.00, 8.00),
         "o3-pro": (20.00, 80.00, 80.00),
@@ -327,6 +331,8 @@ class OpenAIProvider(BaseLLMProvider):
             if result:
                 self._fetched_models = result
                 logger.info(f"OpenAI: found {len(result)} models: {result}")
+                # КАО#R4-S10 — enrich the sync cost path (best-effort).
+                await self.refresh_registry_pricing("openai", result)
 
             return True
 
@@ -388,10 +394,13 @@ class OpenAIProvider(BaseLLMProvider):
                 if details:
                     reasoning_tokens = getattr(details, 'reasoning_tokens', 0) or 0
 
+            # КАО#R4-M16 — OpenAI's output_tokens INCLUDES reasoning tokens;
+            # reporting both unadjusted billed reasoning twice in calculate_cost.
+            visible_output = max(0, output_tokens - reasoning_tokens)
             return LLMResponse(
                 content=content,
                 input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                output_tokens=visible_output,
                 model=model,
                 provider=self.name,
                 latency_ms=latency_ms,
@@ -488,10 +497,13 @@ class OpenAIProvider(BaseLLMProvider):
                 if details:
                     reasoning_tokens = getattr(details, 'reasoning_tokens', 0) or 0
 
+            # КАО#R4-M16 — completion_tokens INCLUDES reasoning_tokens (OpenAI
+            # usage semantics); subtract so cost isn't double-counted.
+            _completion = response.usage.completion_tokens if response.usage else 0
             return LLMResponse(
                 content=content,
                 input_tokens=response.usage.prompt_tokens if response.usage else 0,
-                output_tokens=response.usage.completion_tokens if response.usage else 0,
+                output_tokens=max(0, _completion - reasoning_tokens),
                 model=model,
                 provider=self.name,
                 latency_ms=latency_ms,
