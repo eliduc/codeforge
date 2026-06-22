@@ -14,6 +14,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Play, Rocket, Loader2, Sparkles } from 'lucide-react'
 import notify from '../common/StyledToast'
 import { createSession } from '../../services/api'
+import { useAuthStore } from '../../stores/authStore'
+import ConfirmDialog from '../common/ConfirmDialog'
 
 interface DemoIndexEntry {
   id: string
@@ -36,7 +38,11 @@ export default function DemoGallery() {
   const [items, setItems] = useState<DemoIndexEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [tryingId, setTryingId] = useState<string | null>(null)
+  // КАО#UX-15 — billing-confirm state, mirroring the demo player's Try-it flow.
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const navigate = useNavigate()
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated)
 
   useEffect(() => {
     let cancelled = false
@@ -58,7 +64,23 @@ export default function DemoGallery() {
     }
   }, [])
 
-  async function handleTryYourself(id: string) {
+  // КАО#UX-15 — bring the gallery's Try-it to parity with the demo player
+  // (DemoPlayerPage handleTryYourself): an anonymous visitor is routed to /login
+  // with a return path instead of getting a 401 error toast, and an
+  // authenticated user gets a billing-confirm dialog before a real (paid)
+  // session is created — rather than firing createSession on the first click.
+  function handleTryYourself(id: string) {
+    if (!isAuthenticated) {
+      navigate('/login', { state: { from: '/demos' } })
+      return
+    }
+    setConfirmId(id)
+  }
+
+  async function doCreateSession() {
+    const id = confirmId
+    if (!id) return
+    setCreating(true)
     setTryingId(id)
     try {
       // Fetch the full timeline JSON only when we need the spec.
@@ -78,7 +100,9 @@ export default function DemoGallery() {
     } catch (err: any) {
       notify.error(err?.message || 'Failed to create session from demo')
     } finally {
+      setCreating(false)
       setTryingId(null)
+      setConfirmId(null)
     }
   }
 
@@ -123,6 +147,20 @@ export default function DemoGallery() {
           />
         ))}
       </div>
+
+      {/* КАО#UX-15 — billing confirm before spawning a real session (parity
+          with the demo player's Try-it). */}
+      <ConfirmDialog
+        isOpen={confirmId !== null}
+        onClose={() => { if (!creating) setConfirmId(null) }}
+        onConfirm={doCreateSession}
+        title="Start a real session?"
+        message="This will start a real CodeForge session billed to your account. Continue?"
+        confirmText={creating ? 'Creating…' : 'Create session'}
+        cancelText="Cancel"
+        type="info"
+        loading={creating}
+      />
     </div>
   )
 }

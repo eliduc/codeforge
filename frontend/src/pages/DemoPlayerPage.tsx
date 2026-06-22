@@ -1658,10 +1658,8 @@ function MobileTourDrawer({
         aria-expanded={open}
         aria-controls="cf-mobile-tour-sheet"
       >
-        <style>{`@keyframes cf-tour-pulse {
-          0%, 100% { transform: scale(1); box-shadow: 0 4px 14px rgba(168,85,247,0.4); }
-          50% { transform: scale(1.06); box-shadow: 0 6px 18px rgba(168,85,247,0.7); }
-        }`}</style>
+        {/* КАО#UX-16 — @keyframes cf-tour-pulse moved to index.css (was an inline
+            <style> here, which polluted the button's text content). */}
         <span>📖 Tour</span>
         <span aria-hidden="true">{open ? '▼' : '▲'}</span>
       </button>

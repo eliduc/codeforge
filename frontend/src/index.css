@@ -315,6 +315,14 @@
   }
 }
 
+/* КАО#UX-16 — mobile tour-drawer toggle pulse. Hoisted here from an inline
+   <style> that previously lived inside the Tour <button>, which polluted the
+   button's textContent and re-injected the rule on every render. */
+@keyframes cf-tour-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 4px 14px rgba(168, 85, 247, 0.4); }
+  50% { transform: scale(1.06); box-shadow: 0 6px 18px rgba(168, 85, 247, 0.7); }
+}
+
 .animate-toast-enter {
   animation: toastEnter 0.3s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
 }
