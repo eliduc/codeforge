@@ -36,13 +36,21 @@ async function seedAuth(page: import('@playwright/test').Page) {
   await page.goto('/login')
 }
 
-/** Navigate to the configured test session, waiting for the header to land. */
+/** Navigate to the configured test session, waiting for the page to become
+ *  interactive (not just domcontentloaded). */
 async function gotoSession(page: import('@playwright/test').Page) {
   const sid = process.env.E2E_TEST_SESSION_ID!
   await page.goto(`/sessions/${sid}`)
   // Either the header lands, or we get bounced (auth failure). The latter is
   // a test-config error — surface it loudly rather than masking with timeouts.
   await page.waitForLoadState('domcontentloaded')
+  // КАО#UX-14 — wait for the session detail to actually RENDER, not just fire
+  // domcontentloaded. domcontentloaded resolves while the page is still a
+  // loading spinner (session data not fetched yet); pressing a keyboard
+  // shortcut then toggles state for a modal that isn't in the DOM, which is the
+  // root of the flaky keyboard-help-modal tests. The graph canvas only mounts
+  // after the session has loaded, so it's a reliable "interactive" signal.
+  await page.locator('.react-flow').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -178,6 +186,10 @@ test.describe('Wave 2 P1·S — Keyboard shortcut help modal', () => {
     await seedAuth(page)
     await gotoSession(page)
 
+    // КАО#UX-14 — the toolbar help button (title "Keyboard shortcuts (press ?)")
+    // only renders once the session detail page is past its loading state, so
+    // its presence proves the keydown handler is live AND the modal is mountable.
+    await expect(page.locator('button[title^="Keyboard shortcuts"]').first()).toBeVisible({ timeout: 15_000 })
     // Make sure focus isn't trapped in an input.
     await page.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {})
     await page.keyboard.press('Shift+Slash') // "?" on most US keyboards
@@ -208,6 +220,10 @@ test.describe('Wave 2 P1·S — Keyboard shortcut help modal', () => {
     await seedAuth(page)
     await gotoSession(page)
 
+    // КАО#UX-14 — wait until the toolbar (and thus the keydown handler + mountable
+    // modal) is live before pressing the shortcut; domcontentloaded alone is too
+    // early and was the cause of the flaky open/close here.
+    await expect(page.locator('button[title^="Keyboard shortcuts"]').first()).toBeVisible({ timeout: 15_000 })
     await page.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {})
     await page.keyboard.press('Shift+Slash')
 
