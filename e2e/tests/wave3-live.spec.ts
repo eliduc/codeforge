@@ -28,6 +28,12 @@ const LOCK_KEY = 'codeforge.session.lockViewport'
 /** КАО#R4-S14 — auth rides the httpOnly codeforge_session cookie now. */
 async function seedAuth(page: import('@playwright/test').Page) {
   await injectCookieAuth(page.context())
+  // КАО#UX-12 — land on an app-origin page first. injectCookieAuth only sets a
+  // context cookie + an init script; without a navigation the page stays on
+  // about:blank, where tests that touch window.localStorage (e.g. the
+  // lockViewport seeding below) throw a SecurityError. Regression from the
+  // КАО#R4-S14 cookie-auth migration, which dropped the old page.goto('/login').
+  await page.goto('/login')
 }
 
 /** Navigate to the configured test session, waiting for the header to land. */
