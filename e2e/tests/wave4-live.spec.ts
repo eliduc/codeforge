@@ -347,28 +347,31 @@ test('12. disabled enhancer nodes show opacity-60 + "Disabled" badge + Enable bu
 test('13. side-panel breadcrumb appears after switching panels', async ({ page }) => {
   await gotoSession(page)
 
-  // Open a node panel by clicking a non-spec node (e.g. coder-0). React Flow
-  // renders nodes as elements with data-id attributes; we'll find a coder.
-  const coderNode = page.locator('.react-flow__node[data-id^="coder-"]').first()
-  const coderPresent = await coderNode.count().catch(() => 0)
-  if (coderPresent === 0) {
-    test.skip(true, 'no coder nodes visible — breadcrumb requires opening a non-input DetailPanel')
+  // КАО#UX-13 — drive the breadcrumb via two reliable TOOLBAR buttons instead of
+  // a graph-node click. The previous version force-clicked the coder node's
+  // geometric CENTRE, which lands on one of the AgentNode's inner buttons
+  // (config gear / run-fix badges — all stopPropagation) and never bubbles to
+  // ReactFlow's onNodeClick, so the DetailPanel never opened and
+  // pushPanel('detail') was skipped → panelHistory stayed length 1 and no
+  // breadcrumb rendered. (The old `h3:has-text("Coder")` check was a false
+  // positive — it matched the node's OWN label, not the panel.) Verified on
+  // stage: a centre click opens nothing; "View Result" + "Intervene" push
+  // distinct panel keys whose panels don't depend on node-selection state, so
+  // the breadcrumb — including the switch-back step — renders deterministically.
+  const viewResult = page.locator('button:has-text("View Result")').first()
+  if ((await viewResult.count().catch(() => 0)) === 0) {
+    test.skip(true, 'no finalResult on this session — breadcrumb needs ≥2 openable side panels (set E2E_TEST_SESSION_ID to a completed session)')
   }
-
-  await coderNode.click({ force: true })
-  // DetailPanel mounts with an h3 title; breadcrumb only renders when
-  // panelHistory.length > 1 with *different* keys (the store dedups same-key).
-  // The 'i' keyboard shortcut opens intervention but does NOT call pushPanel
-  // (gap between keyboard and button handlers — flagged in report). The
-  // Intervene header BUTTON does call pushPanel('intervention'), so use that.
-  await expect(page.locator('h3:has-text("Coder")').first()).toBeVisible({ timeout: 5_000 })
+  await expect(viewResult).toBeVisible({ timeout: 15_000 })
+  await viewResult.click()
 
   const intervenenBtn = page.locator('button:has-text("Intervene")').first()
   await expect(intervenenBtn).toBeVisible({ timeout: 5_000 })
   await intervenenBtn.click()
 
-  // Wait for the breadcrumb chip-row. PANEL_LABELS chips have titles like
-  // "Switch back to Detail" / "Currently viewing Intervene".
+  // panelHistory is now ['code','intervention'] → the breadcrumb (length > 1)
+  // renders inside the Intervention panel: "Switch back to Result" ·
+  // "Currently viewing Intervene".
   const breadcrumb = page.locator(
     'button[title^="Switch back to"], button[title^="Currently viewing"]',
   )
@@ -376,7 +379,8 @@ test('13. side-panel breadcrumb appears after switching panels', async ({ page }
   const switchBtn = page.locator('button[title^="Switch back to"]').first()
   if (await switchBtn.count() > 0) {
     await switchBtn.click()
-    // After switching, the previously-current chip should now be clickable.
+    // After switching back to Result, the breadcrumb still shows a non-current
+    // chip ("Switch back to Intervene").
     await expect(page.locator('button[title^="Switch back to"]').first()).toBeVisible({ timeout: 3_000 })
   }
 })
