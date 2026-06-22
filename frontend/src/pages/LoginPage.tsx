@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
-import { Code2, Loader2, ArrowLeft, Mail, ShieldAlert, CheckCircle2 } from 'lucide-react'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
+import { Code2, Loader2, ArrowLeft, Mail, ShieldAlert, CheckCircle2, Sparkles } from 'lucide-react'
 import { requestOTP, verifyOTP, requestAccess } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
 
@@ -456,6 +456,22 @@ export default function LoginPage() {
             </>
           )}
           </div>
+        </div>
+
+        {/* КАО#UX-2 — cold-start CTA. A first-time visitor needs a way to SEE the
+            product before committing an email. Demos sell better than a form and
+            need no account, so surface them prominently below the sign-in card. */}
+        <div className="mt-5 text-center">
+          <p className="text-cf-text-muted text-sm mb-2">
+            New here? Watch real multi-agent runs replayed — no account needed.
+          </p>
+          <Link
+            to="/demos"
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-cf-border hover:border-cf-primary/60 text-cf-text text-sm font-medium rounded-lg transition-colors"
+          >
+            <Sparkles className="w-4 h-4 text-amber-400" />
+            Watch a demo first
+          </Link>
         </div>
       </div>
     </div>

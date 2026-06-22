@@ -371,7 +371,11 @@ export default function VisualReviewPanel({
   const useTournament = candidates.length >= 5
 
   return (
-    <div className="w-[560px] bg-cf-panel border-l border-cf-border flex flex-col h-full animate-slideIn">
+    // КАО#UX-6 — was a hard w-[560px]; on viewports narrower than the panel the
+    // parent's overflow-hidden clipped it (and squeezed the graph to ~0). w-full
+    // max-w-[560px] keeps the 560px cap on desktop but lets it shrink on narrow
+    // screens; shrink-0 preserves the desktop split against the flex-1 graph.
+    <div className="w-full max-w-[560px] shrink-0 bg-cf-panel border-l border-cf-border flex flex-col h-full animate-slideIn">
       {/* Header */}
       <div className="p-4 border-b border-cf-border flex items-center justify-between bg-cf-panel/80 backdrop-blur-sm sticky top-0 z-10 flex-shrink-0">
         <div className="min-w-0">
@@ -385,6 +389,9 @@ export default function VisualReviewPanel({
             )}
           </h3>
           <p className="text-xs text-cf-text-muted mt-0.5">Choose your favorite — score each 0–10</p>
+          {/* КАО#UX-6 — make the scoring authority explicit: the user's scores
+              decide the winner; the AI's vision scores are only a fallback. */}
+          <p className="text-[11px] text-cf-text-muted/80 mt-0.5">Your scores decide the winner — the AI's vision scores are only a fallback.</p>
         </div>
         <button
           type="button"

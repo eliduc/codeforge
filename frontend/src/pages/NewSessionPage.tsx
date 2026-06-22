@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { AlertTriangle, Info, Loader2, LayoutTemplate, Save } from 'lucide-react'
+import { AlertTriangle, Info, Loader2, LayoutTemplate, Save, ChevronRight, Gauge } from 'lucide-react'
 import notify from '../components/common/StyledToast'
 import Button from '../components/common/Button'
 import { createSession } from '../services/api'
@@ -407,12 +407,23 @@ export default function NewSessionPage() {
         >
           {/* Specification */}
           <div>
-            <label
-              htmlFor="spec-input"
-              className="block text-sm font-medium text-cf-text mb-1"
-            >
-              Specification <span className="text-cf-error">*</span>
-            </label>
+            {/* КАО#UX-9 — put a template entry point right next to the spec
+                field (was only a link at the very bottom of the page). */}
+            <div className="flex items-center justify-between mb-1">
+              <label
+                htmlFor="spec-input"
+                className="block text-sm font-medium text-cf-text"
+              >
+                Specification <span className="text-cf-error">*</span>
+              </label>
+              <Link
+                to="/sessions"
+                className="inline-flex items-center gap-1 text-xs text-indigo-700 dark:text-cf-primary hover:text-cf-secondary transition-colors"
+              >
+                <LayoutTemplate className="w-3.5 h-3.5" />
+                Start from a template
+              </Link>
+            </div>
             <textarea
               id="spec-input"
               autoFocus
@@ -466,6 +477,7 @@ export default function NewSessionPage() {
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
               className={inputOk}
+              aria-describedby="lang-help"
             >
               {LANGUAGE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -473,6 +485,15 @@ export default function NewSessionPage() {
                 </option>
               ))}
             </select>
+
+            {/* КАО#UX-5 — explain what the "(Browser)" / HTML variants actually do.
+                Cold users can't tell why they'd pick one; the Browser variants run
+                in a headless Chromium so agents can screenshot + visually review. */}
+            <p id="lang-help" className="mt-1 text-xs text-cf-text-muted">
+              Browser / HTML variants run in a headless browser so agents can capture
+              screenshots and run visual review. Pick one for anything with a UI,
+              canvas, animation, or graphics.
+            </p>
 
             {/* КАО#VR-Wave6 SpecAnalyzer — Visual-spec / non-browser-language warning.
                 Shown when the debounced spec contains visual keywords but the
@@ -583,6 +604,17 @@ export default function NewSessionPage() {
             </p>
           </div>
 
+          {/* КАО#UX-9 — group the power-user controls (agent counts, enhancement
+              & visual-review toggles) under a labelled disclosure so first-timers
+              see a calmer form. Open by default: nothing is hidden on load (no
+              degradation, all fields remain reachable) — users may collapse it. */}
+          <details open className="group/adv border border-cf-border rounded-lg">
+            <summary className="cursor-pointer select-none px-3 py-2.5 text-sm font-medium text-cf-text flex items-center gap-2 list-none [&::-webkit-details-marker]:hidden">
+              <ChevronRight className="w-4 h-4 text-cf-text-muted transition-transform group-open/adv:rotate-90" />
+              Advanced settings
+              <span className="text-xs text-cf-text-muted font-normal">agent counts, enhancement &amp; visual review</span>
+            </summary>
+            <div className="px-3 pb-4 pt-1 space-y-5">
           {/* Numeric row: iterations / coders / testers */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
@@ -733,6 +765,32 @@ export default function NewSessionPage() {
               </span>
             </label>
           </div>
+
+            </div>
+          </details>
+
+          {/* КАО#UX-10 — run-scale / cost preview before launch. The exact spend
+              depends on spec size and the models each agent uses, so this is a
+              deliberately ROUGH band over the number of agent passes the run will
+              execute — enough to set expectations, not a billing promise. */}
+          {iterations >= 1 && coders >= 1 && testers >= 1 && (() => {
+            const passes = iterations * (coders + testers + 1) + 1 // +1/iter summarizer, +1 finalizer
+            const low = (passes * 0.04).toFixed(2)
+            const high = (passes * 0.18).toFixed(2)
+            return (
+              <div className="rounded-lg border border-cf-border bg-cf-bg/60 px-3 py-2.5 flex items-start gap-2.5">
+                <Gauge className="w-4 h-4 text-cf-primary mt-0.5 shrink-0" />
+                <div className="text-xs text-cf-text-muted leading-relaxed">
+                  <span className="text-cf-text font-medium">Run preview:</span>{' '}
+                  ~{passes} agent passes ({iterations} iteration{iterations === 1 ? '' : 's'} ×{' '}
+                  {coders} coder{coders === 1 ? '' : 's'} + {testers} tester{testers === 1 ? '' : 's'} + a
+                  summarizer, then 1 finalizer). Rough cost{' '}
+                  <span className="text-cf-text font-medium">${low}–${high}</span> — actuals depend on
+                  spec size and the models your agents use.
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Submit */}
           <div className="flex items-center gap-3 pt-2">

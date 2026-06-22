@@ -10,12 +10,15 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Dialog, Combobox, Transition } from '@headlessui/react'
-import { Search, ArrowRight, Compass, FolderOpen, BarChart3, Plus, Settings, Sparkles, Moon } from 'lucide-react'
+import { Search, ArrowRight, Compass, FolderOpen, BarChart3, Plus, Settings, Sparkles, Moon, FileCode } from 'lucide-react'
 import clsx from 'clsx'
 import { useThemeStore } from '../../stores/themeStore'
 import { resetAll as resetAllTours } from '../onboarding/useOnboarding'
+// КАО#UX-7 — P3 power-tool: live session search in the palette.
+import { useFetchData } from '../../hooks/useFetchData'
+import { getSessions } from '../../services/api'
 
-type CommandCategory = 'Navigate' | 'Action'
+type CommandCategory = 'Navigate' | 'Action' | 'Session'
 
 interface PaletteCommand {
   id: string
@@ -73,17 +76,39 @@ export default function CommandPalette() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [navigate, toggleTheme])
 
+  // КАО#UX-7 — lazily fetch the session list ONLY while the palette is open, so
+  // it costs nothing on cold load. useFetchData cancels stale fetches on close.
+  const { data: sessionsPage } = useFetchData(() => getSessions(0, 50), [open], { enabled: open })
+
+  // Turn sessions into navigate-to-detail commands. These are appended to the
+  // results only when the user has typed something (so opening the palette
+  // doesn't dump 50 rows over the static commands).
+  const sessionCommands: PaletteCommand[] = useMemo(() => {
+    const items = sessionsPage?.items ?? []
+    return items.map(s => ({
+      id: 'session-' + s.id,
+      label: s.name || '(untitled session)',
+      category: 'Session' as const,
+      icon: FileCode,
+      run: () => navigate('/sessions/' + s.id),
+    }))
+  }, [sessionsPage, navigate])
+
   // Simple substring / token fuzzy filter — case-insensitive. All tokens in
-  // the query must appear somewhere in the label.
+  // the query must appear somewhere in the label. КАО#UX-7 — static commands
+  // always show (filtered); matching sessions append below, capped at 8.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return commands
     const tokens = q.split(/\s+/)
-    return commands.filter(cmd => {
-      const hay = cmd.label.toLowerCase()
+    const match = (label: string) => {
+      const hay = label.toLowerCase()
       return tokens.every(t => hay.includes(t))
-    })
-  }, [query, commands])
+    }
+    const staticMatches = commands.filter(cmd => match(cmd.label))
+    const sessionMatches = sessionCommands.filter(cmd => match(cmd.label)).slice(0, 8)
+    return [...staticMatches, ...sessionMatches]
+  }, [query, commands, sessionCommands])
 
   function runCommand(cmd: PaletteCommand | null) {
     if (!cmd) return
@@ -132,7 +157,7 @@ export default function CommandPalette() {
                     <Search className="w-4 h-4 text-cf-text-muted shrink-0" aria-hidden="true" />
                     <Combobox.Input
                       autoFocus
-                      placeholder="Type a command..."
+                      placeholder="Search commands and sessions..."
                       onChange={(e) => setQuery(e.target.value)}
                       displayValue={() => query}
                       className="flex-1 bg-transparent text-sm text-cf-text placeholder-cf-text-muted focus:outline-none"
@@ -175,6 +200,8 @@ export default function CommandPalette() {
                                     'text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide font-medium',
                                     cmd.category === 'Navigate'
                                       ? 'bg-indigo-100 dark:bg-cf-primary/15 text-indigo-700 dark:text-cf-primary'
+                                      : cmd.category === 'Session'
+                                      ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                                       : 'bg-cf-border text-cf-text-muted',
                                   )}
                                 >

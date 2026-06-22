@@ -109,7 +109,11 @@ export default function DemoGallery() {
           </span>
         </h2>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* КАО#UX-3 — 5 demos in a 4-col grid wrapped to an awkward 4+1 with the
+          5th card below the fold on desktop. xl:grid-cols-5 fits all five on one
+          row at ≥1280px (no wrap, nothing cut off); lg:grid-cols-3 gives a
+          balanced 3+2 on mid widths. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
         {items.map(item => (
           <DemoCard
             key={item.id}

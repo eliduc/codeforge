@@ -1480,6 +1480,25 @@ export default function SessionDetailPage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([])
   const [flowViewport, setFlowViewport] = useState({ x: 0, y: 0, zoom: 1 })
 
+  // КАО#UX-8 — graph reading modes (first increment): a legend collapse toggle
+  // and a "hide secondary edges" toggle. Secondary edges = the dashed feedback
+  // / enhancement loops; hiding them declutters the graph for reading without
+  // touching the source `edges` (so WS animation logic stays intact).
+  const [legendCollapsed, setLegendCollapsed] = useState(false)
+  const [hideSecondaryEdges, setHideSecondaryEdges] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const displayEdges = useMemo<any[]>(() => {
+    if (!hideSecondaryEdges) return edges
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return edges.map((e: any) => {
+      const isSecondary =
+        !!e?.style?.strokeDasharray ||
+        (typeof e?.id === 'string' && e.id.includes('feedback')) ||
+        e?.data?.artifactType === 'enhancement'
+      return isSecondary ? { ...e, hidden: true } : e
+    })
+  }, [edges, hideSecondaryEdges])
+
   // Ref to always hold the latest handleWSMessage to avoid stale closures in WS callback
   const handleWSMessageRef = useRef<(msg: { type: string; data?: Record<string, unknown> }) => void>(() => {})
   // Guard against concurrent loadSession calls (race condition)
@@ -5054,16 +5073,13 @@ export default function SessionDetailPage() {
               </button>
             )}
 
-            {/* Separator between lifecycle and recovery — only show if any
-                recovery-group button will be visible to avoid orphaned bars. */}
-            {(session.status === 'failed'
-              || session.status === 'completed'
-              || session.status === 'cancelled'
-              || session.status === 'awaiting_enhancement'
-              || session.status === 'awaiting_enhancement_review'
-              || session.status === 'awaiting_visual_review'
-              || session.status === 'paused') && (
-              <div className="w-px h-7 bg-gray-700 mx-1 hidden md:block" aria-hidden="true" />
+            {/* Separator between lifecycle and recovery. КАО#UX-11 — recovery
+                actions (Re-finalize / Restart / Reset) now live in the ⋯ menu at
+                ALL breakpoints, so the only inline recovery button left is
+                "Retry from failed step" (failed only). Show the bar only then,
+                otherwise it would be orphaned next to the Group-D separator. */}
+            {session.status === 'failed' && (
+              <div className="w-px h-7 bg-gray-700 mx-1" aria-hidden="true" />
             )}
 
             {/* === Group C: recovery / destructive actions (hidden < md, in ⋯ menu) === */}
@@ -5083,7 +5099,7 @@ export default function SessionDetailPage() {
               <button
                 onClick={handleRefinalize}
                 disabled={actionLoading}
-                className="hidden md:flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                className="hidden items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
                 title="Re-run finalization with existing code versions"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -5099,7 +5115,7 @@ export default function SessionDetailPage() {
               <button
                 onClick={handleRestart}
                 disabled={actionLoading}
-                className="hidden md:flex items-center gap-2 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                className="hidden items-center gap-2 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-gray-600 text-white rounded-lg transition-colors"
                 title="Discard all current results and re-run the workflow from iteration 0"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
@@ -5111,7 +5127,7 @@ export default function SessionDetailPage() {
               <button
                 onClick={handleReset}
                 disabled={actionLoading}
-                className="hidden md:flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+                className="hidden items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
                 Reset
@@ -5146,7 +5162,7 @@ export default function SessionDetailPage() {
             <button
               onClick={handleOpenSaveTemplate}
               disabled={savingTemplate}
-              className="hidden md:flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-gray-200 hover:text-white rounded-lg transition-colors"
+              className="hidden items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-gray-200 hover:text-white rounded-lg transition-colors"
               title="Save this session's configuration as a reusable template"
             >
               <BookmarkPlus className="w-4 h-4" />
@@ -5187,9 +5203,12 @@ export default function SessionDetailPage() {
               <Settings className="w-4 h-4" />
             </button>
 
-            {/* Overflow ⋯ menu (md:hidden) — surfaces md-hidden secondary
-                actions (Settings, Save Template, Reset, Re-finalize, Restart). */}
-            <div ref={headerOverflowRef} className="md:hidden relative">
+            {/* Overflow ⋯ menu — КАО#UX-11: now present at ALL breakpoints so the
+                recovery/utility cluster (Save Template, Reset, Re-finalize,
+                Restart) is consolidated here on desktop too, leaving the bar to
+                ~1-2 primary actions per state. Settings stays inline on desktop
+                (it is a tour anchor) and only appears in this menu below md. */}
+            <div ref={headerOverflowRef} className="relative">
               <button
                 type="button"
                 onClick={() => setHeaderOverflowOpen(v => !v)}
@@ -5205,10 +5224,12 @@ export default function SessionDetailPage() {
                   role="menu"
                   className="absolute right-0 mt-1 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-30 py-1"
                 >
+                  {/* КАО#UX-11 — Settings is inline on desktop (tour anchor), so
+                      only surface it in the menu below md to avoid duplication. */}
                   <button
                     role="menuitem"
                     onClick={() => { setHeaderOverflowOpen(false); setShowSettings(true) }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+                    className="w-full md:hidden flex items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
                   >
                     <Settings className="w-4 h-4" />
                     Session Settings
@@ -5329,7 +5350,7 @@ export default function SessionDetailPage() {
           <WSStatusPill state={wsState} recentlyRecovered={wsRecentlyRecovered} />
           <ReactFlow
             nodes={nodes}
-            edges={edges}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
@@ -5405,9 +5426,33 @@ export default function SessionDetailPage() {
               />
             </Panel>
 
-            {/* Legend Panel */}
+            {/* Legend Panel — КАО#UX-8: collapsible to a small pill. */}
             <Panel position="bottom-left">
-              <LegendPanel compact />
+              <LegendPanel
+                compact
+                collapsible
+                collapsed={legendCollapsed}
+                onToggleCollapsed={() => setLegendCollapsed(v => !v)}
+              />
+            </Panel>
+
+            {/* КАО#UX-8 — graph reading toggle: hide the dashed feedback /
+                enhancement loops to declutter the graph for reading. */}
+            <Panel position="bottom-right">
+              <button
+                type="button"
+                onClick={() => setHideSecondaryEdges(v => !v)}
+                aria-pressed={hideSecondaryEdges}
+                title={hideSecondaryEdges ? 'Show feedback / enhancement edges' : 'Hide feedback / enhancement edges'}
+                className={`bg-gray-800/90 backdrop-blur-sm border rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 text-xs transition-colors ${
+                  hideSecondaryEdges
+                    ? 'border-cf-primary/60 text-cf-primary'
+                    : 'border-gray-700 text-gray-300 hover:text-white'
+                }`}
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                {hideSecondaryEdges ? 'Loops hidden' : 'Hide loops'}
+              </button>
             </Panel>
 
             {/* Phase indicator — Улучшатели#3 wave 2 #8: humanizePhase renders

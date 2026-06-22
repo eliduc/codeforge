@@ -1,12 +1,19 @@
-import { 
+import {
   Loader2,
   CheckCircle2,
   XCircle,
-  Clock
+  Clock,
+  List,
+  ChevronDown,
 } from 'lucide-react'
 
 interface LegendPanelProps {
   compact?: boolean
+  // КАО#UX-8 — optional collapse support. Defaults off so existing callers
+  // (e.g. the demo player) are completely unaffected.
+  collapsible?: boolean
+  collapsed?: boolean
+  onToggleCollapsed?: () => void
 }
 
 const statusTypes = [
@@ -16,7 +23,24 @@ const statusTypes = [
   { icon: XCircle, label: 'Error', color: 'text-red-400', dotColor: 'bg-red-500', animate: false },
 ]
 
-export default function LegendPanel({ compact = false }: LegendPanelProps) {
+export default function LegendPanel({ compact = false, collapsible = false, collapsed = false, onToggleCollapsed }: LegendPanelProps) {
+  // КАО#UX-8 — collapsed state: render a small "Legend" pill that expands on click.
+  if (collapsible && collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={onToggleCollapsed}
+        aria-expanded={false}
+        aria-label="Show legend"
+        title="Show legend"
+        className="bg-gray-800/90 backdrop-blur-sm border border-gray-700 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 text-xs text-gray-300 hover:text-white transition-colors"
+      >
+        <List className="w-3.5 h-3.5" />
+        Legend
+      </button>
+    )
+  }
+
   if (compact) {
     return (
       <div className="bg-gray-800/90 backdrop-blur-sm border border-gray-700 rounded-lg p-2 ml-12">
@@ -34,7 +58,21 @@ export default function LegendPanel({ compact = false }: LegendPanelProps) {
 
   return (
     <div className="bg-gray-800/90 backdrop-blur-sm border border-gray-700 rounded-xl p-4 space-y-4 min-w-[180px]">
-      <h3 className="text-sm font-semibold text-white">Legend</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-white">Legend</h3>
+        {collapsible && (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-expanded={true}
+            aria-label="Hide legend"
+            title="Hide legend"
+            className="p-0.5 -m-0.5 rounded text-gray-400 hover:text-white transition-colors"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        )}
+      </div>
       
       {/* Status types */}
       <div className="space-y-2">

@@ -45,6 +45,7 @@ import {
   ChevronDown,
   Zap,
   ExternalLink,
+  SkipForward,
 } from 'lucide-react'
 import notify from '../components/common/StyledToast'
 import ConfirmDialog from '../components/common/ConfirmDialog'
@@ -993,27 +994,51 @@ export default function DemoPlayerPage() {
 
       {/* Bottom control bar */}
       <div className="border-t border-gray-800 bg-gray-900/90 backdrop-blur-sm px-4 py-3">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={state.playing ? pause : play}
-            className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
-            title={state.playing ? 'Pause' : 'Play'}
-            aria-label={state.playing ? 'Pause' : 'Play'}
-          >
-            {state.playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-          </button>
-          <button
-            onClick={restart}
-            className="p-2 text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-            title="Restart"
-            aria-label="Restart"
-          >
-            <RotateCcw className="w-5 h-5" />
-          </button>
+        {/* КАО#UX-1 — on mobile this was a single non-wrapping row, so the speed
+            segmented control ran off the right edge (unreachable). Wrap into two
+            rows below md: progress takes its own full-width row, transport + speed
+            share the row below. Desktop (md+) keeps the original single-row order
+            via responsive `order`. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Transport — row 2 left on mobile, leftmost on desktop */}
+          <div className="order-2 md:order-1 flex items-center gap-2 shrink-0">
+            <button
+              onClick={state.playing ? pause : play}
+              className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+              title={state.playing ? 'Pause' : 'Play'}
+              aria-label={state.playing ? 'Pause' : 'Play'}
+            >
+              {state.playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+            </button>
+            <button
+              onClick={restart}
+              className="p-2 text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+              title="Restart"
+              aria-label="Restart"
+            >
+              <RotateCcw className="w-5 h-5" />
+            </button>
+            {/* КАО#UX-4 — surface "skip straight to the finished result" during
+                playback. The same action previously lived only behind the
+                Final-result tab placeholder (a non-obvious 2-click path); many
+                visitors' main value path is "show me the built app". Hidden once
+                finished, where the WhatNextCta + Final tab take over. */}
+            {!state.finished && (
+              <button
+                onClick={() => { seekTo(timeline.duration_seconds); setTab('final') }}
+                className="p-2 text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                title="Skip to final result"
+                aria-label="Skip to final result"
+              >
+                <SkipForward className="w-5 h-5" />
+              </button>
+            )}
+          </div>
 
           {/* Улучшатели#2 P1·M — progress bar as proper a11y slider with
-              keyboard + pointer-drag support. */}
-          <div className="flex-1 flex items-center gap-3">
+              keyboard + pointer-drag support.
+              КАО#UX-1 — full-width own row on mobile (order-1), grows inline on desktop. */}
+          <div className="order-1 md:order-2 w-full md:w-auto md:flex-1 flex items-center gap-3">
             <div className="text-xs font-mono text-gray-300 tabular-nums w-12 text-right">
               {state.clock.toFixed(1)}s
             </div>
@@ -1028,8 +1053,9 @@ export default function DemoPlayerPage() {
             </div>
           </div>
 
-          {/* Speed control — КАО#R3-sugS2: announce active speed (was color-only) */}
-          <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-0.5" role="group" aria-label="Playback speed">
+          {/* Speed control — КАО#R3-sugS2: announce active speed (was color-only).
+              КАО#UX-1 — order-3, pushed to the right on the mobile transport row. */}
+          <div className="order-3 ml-auto md:ml-0 shrink-0 flex items-center gap-1 bg-gray-800 rounded-lg p-0.5" role="group" aria-label="Playback speed">
             {SPEEDS.map(s => (
               <button
                 key={s}
