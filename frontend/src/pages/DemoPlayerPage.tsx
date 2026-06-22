@@ -1759,13 +1759,7 @@ function Confetti() {
   }, [])
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
-      <style>{`
-        @keyframes cf-confetti-fall {
-          0% { transform: translateY(-20px) rotate(0deg); opacity: 0; }
-          10% { opacity: 1; }
-          100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
-        }
-      `}</style>
+      {/* КАО#UX-16 — @keyframes cf-confetti-fall moved to index.css. */}
       {/* Улучшатели#8 P3·S — a11y: announce completion to screen-readers. */}
       <div
         role="status"
