@@ -181,6 +181,51 @@ test.describe('Wave-4 Demo — /demos gallery (anon + auth)', () => {
         .toBeVisible({ timeout: 10_000 })
     }
   })
+
+  // КАО#UX-15 — regression for the gallery "Try it" flow. Previously the gallery
+  // card fired createSession() directly: an anonymous visitor got a 401 error
+  // toast (instead of a login redirect) and an authed user spawned a real paid
+  // session on the first click (no confirm). It now matches the demo player.
+  test('11c. КАО#UX-15 — gallery "Try it" while anonymous redirects to /login (no 401 toast)', async ({ page }) => {
+    await page.goto('/demos')
+    await expect(page.getByRole('heading', { name: 'Demos', exact: true }))
+      .toBeVisible({ timeout: 15_000 })
+    // The card "Try it" button (Rocket) — distinct from the "Watch demo" link.
+    const tryBtn = page.getByRole('button', { name: /Try it/i }).first()
+    await expect(tryBtn).toBeVisible({ timeout: 10_000 })
+    await tryBtn.click()
+    // Routes to /login (with a return path) instead of calling createSession.
+    await expect(page).toHaveURL(/\/login(\?|$)/, { timeout: 10_000 })
+    // And no "failed to create session" / 401 toast leaked through.
+    await expect(page.getByText(/Failed to create session|Not authenticated/i)).toHaveCount(0)
+  })
+
+  test('11d. КАО#UX-15 — gallery "Try it" while authed opens a billing confirm (Cancel ⇒ no session)', async ({ page }) => {
+    test.skip(!process.env.E2E_AUTH_TOKEN, 'needs E2E_AUTH_TOKEN for the authenticated confirm path')
+    await injectCookieAuth(page.context())
+    // Let the auth store finish its /api/auth/me round-trip so isAuthenticated
+    // is true before the click (otherwise the gallery would route to /login).
+    const me = page
+      .waitForResponse(r => r.url().includes('/api/auth/me') && r.status() === 200, { timeout: 10_000 })
+      .catch(() => null)
+    await page.goto('/demos')
+    await me
+    // One extra settle so the auth store has flipped isAuthenticated before the
+    // click (mirrors the player's ConfirmDialog test).
+    await page.waitForTimeout(300)
+    await expect(page.getByRole('heading', { name: 'Demos', exact: true }))
+      .toBeVisible({ timeout: 15_000 })
+    const tryBtn = page.getByRole('button', { name: /Try it/i }).first()
+    await expect(tryBtn).toBeVisible({ timeout: 10_000 })
+    await tryBtn.click()
+    // Billing confirm dialog appears (parity with the player) — no navigation,
+    // no session created yet.
+    await expect(page.getByText(/Start a real session\?/i)).toBeVisible({ timeout: 5_000 })
+    // Cancel so the test never spawns a real (paid) session.
+    await page.getByRole('button', { name: /^Cancel$/ }).click()
+    await expect(page.getByText(/Start a real session\?/i)).toBeHidden({ timeout: 5_000 })
+    await expect(page).toHaveURL(/\/demos$/)
+  })
 })
 
 // ─── 13. Keyboard shortcuts: typing-input edge case ──────────────────────────
