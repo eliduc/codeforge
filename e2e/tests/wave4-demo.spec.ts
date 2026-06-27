@@ -461,3 +461,82 @@ test.describe('Wave-4 Demo — Speed control persistence', () => {
       .toBeLessThan(2.6)
   })
 })
+
+// ─── КАО#UX-1 / UX-3 — public-path layout regressions (real-browser only) ─────
+// jsdom has no layout engine, so these viewport/overflow contracts live here.
+// Anonymous — /demos and /demo/:id are public.
+
+test.describe('Wave-4 Demo — КАО#UX layout regressions (public)', () => {
+  test('КАО#UX-3 — /demos fits all 5 cards in one row at 1280 and never overflows horizontally', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/demos')
+    await expect(page.locator('a[href^="/demo/"]').first()).toBeVisible({ timeout: 15_000 })
+
+    const r = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('a[href^="/demo/"]')]
+      const rows = new Set(cards.map(c => Math.round(c.getBoundingClientRect().top / 8)))
+      return {
+        count: cards.length,
+        rows: rows.size,
+        horizOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+      }
+    })
+    expect(r.count).toBe(5)
+    expect(r.rows, 'all 5 demo cards should sit on one row at ≥1280px (no 4+1 wrap)').toBe(1)
+    expect(r.horizOverflow, 'no horizontal page overflow').toBe(false)
+  })
+
+  test('КАО#UX-3 — /demos at 390 has no horizontal overflow and the last card is reachable', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/demos')
+    await expect(page.locator('a[href^="/demo/"]').first()).toBeVisible({ timeout: 15_000 })
+
+    const horiz = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
+    expect(horiz, 'no horizontal overflow on mobile').toBe(false)
+
+    // Scroll the inner panel to the bottom and confirm the 5th card is reachable.
+    const reachable = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('a[href^="/demo/"]')]
+      let el: Element | null = cards[0]?.closest('div') ?? null
+      let scroller: Element | null = null
+      while (el && el !== document.body) {
+        const s = getComputedStyle(el)
+        if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 1) { scroller = el; break }
+        el = el.parentElement
+      }
+      if (scroller) (scroller as HTMLElement).scrollTop = scroller.scrollHeight
+      else window.scrollTo(0, document.documentElement.scrollHeight)
+      const last = cards[cards.length - 1]?.getBoundingClientRect()
+      return last ? last.bottom <= window.innerHeight + 2 : false
+    })
+    expect(reachable, 'the 5th card must be reachable by scrolling').toBe(true)
+  })
+
+  test('КАО#UX-1 — mobile Demo Player control bar keeps every speed preset inside the viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/demo/mandelbulb')
+    await page.waitForLoadState('networkidle').catch(() => {})
+    // Wait for the transport (Play/Pause) to confirm the player chrome rendered.
+    await expect(page.getByRole('button', { name: /^(Play|Pause)$/ }).first()).toBeVisible({ timeout: 15_000 })
+
+    const r = await page.evaluate(() => {
+      const speedBtns = [...document.querySelectorAll('[aria-label="Playback speed"] button')]
+      const slider = document.querySelector('[role="slider"]')
+      return {
+        speedCount: speedBtns.length,
+        offRight: speedBtns.filter(b => b.getBoundingClientRect().right > window.innerWidth + 1).length,
+        sliderWidth: slider ? Math.round(slider.getBoundingClientRect().width) : 0,
+      }
+    })
+    expect(r.speedCount, 'all speed presets render').toBeGreaterThan(0)
+    expect(r.offRight, 'no speed preset paints past the right edge').toBe(0)
+    expect(r.sliderWidth, 'the progress slider keeps a usable width').toBeGreaterThan(40)
+  })
+
+  test('КАО#UX-4 — Demo Player exposes a "Skip to final result" control during playback', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/demo/mandelbulb')
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await expect(page.locator('button[aria-label="Skip to final result"]')).toBeVisible({ timeout: 15_000 })
+  })
+})
