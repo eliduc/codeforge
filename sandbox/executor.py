@@ -38,6 +38,30 @@ async def verify_sandbox_key(x_sandbox_key: str = Header(default="")) -> None:
     if not hmac.compare_digest(x_sandbox_key, SANDBOX_API_KEY):
         raise HTTPException(status_code=403, detail="Invalid sandbox API key")
 
+
+# КАО#R5-sandbox-env — user code executes in this process's environment, so the
+# sandbox's OWN secrets (at minimum SANDBOX_API_KEY, plus anything that looks
+# like a credential) must never be inherited by the child process — otherwise a
+# user submitting `print(os.environ['SANDBOX_API_KEY'])` reads the internal auth
+# secret straight out of the execution output. We strip credential-shaped keys
+# and always drop SANDBOX_API_KEY explicitly. Runtime essentials (PATH, HOME,
+# LANG, PYTHONPATH, PUPPETEER_EXECUTABLE_PATH, …) do not match these patterns and
+# are preserved; per-language vars are re-applied afterwards via `extra`.
+_SECRET_ENV_MARKERS = ("SECRET", "TOKEN", "PASSWORD", "PASSWD", "APIKEY", "API_KEY", "_KEY")
+
+
+def _sanitized_child_env(extra: Optional[dict] = None) -> dict:
+    """Return a copy of os.environ with credential-shaped variables removed."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not any(marker in k.upper() for marker in _SECRET_ENV_MARKERS)
+    }
+    env.pop("SANDBOX_API_KEY", None)  # explicit belt-and-suspenders
+    if extra:
+        env.update(extra)
+    return env
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -400,9 +424,8 @@ async def execute_code(request: ExecutionRequest, work_dir: Path) -> ExecutionRe
 
     code_file.write_text(request.code)
 
-    # Prepare execution environment
-    env = os.environ.copy()
-    env.update(config.env)
+    # Prepare execution environment (КАО#R5-sandbox-env: strip sandbox secrets)
+    env = _sanitized_child_env(config.env)
 
     # Add deps to Python path if needed
     deps_dir = work_dir / "deps"
@@ -765,12 +788,13 @@ async def _validate_browser_impl(request: BrowserValidationRequest) -> Execution
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(work_dir),
-                env={
-                    **os.environ,
-                    "PUPPETEER_EXECUTABLE_PATH": os.environ.get(
-                        "PUPPETEER_EXECUTABLE_PATH", "/usr/bin/chromium"
-                    ),
-                },
+                env=_sanitized_child_env(  # КАО#R5-sandbox-env
+                    {
+                        "PUPPETEER_EXECUTABLE_PATH": os.environ.get(
+                            "PUPPETEER_EXECUTABLE_PATH", "/usr/bin/chromium"
+                        ),
+                    }
+                ),
             )
 
             # Wait with overall timeout (validator timeout + startup buffer)
@@ -929,12 +953,13 @@ async def _capture_screenshots_impl(request: ScreenshotRequest) -> ScreenshotRes
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(work_dir),
-            env={
-                **os.environ,
-                "PUPPETEER_EXECUTABLE_PATH": os.environ.get(
-                    "PUPPETEER_EXECUTABLE_PATH", "/usr/bin/chromium"
-                ),
-            },
+            env=_sanitized_child_env(  # КАО#R5-sandbox-env
+                {
+                    "PUPPETEER_EXECUTABLE_PATH": os.environ.get(
+                        "PUPPETEER_EXECUTABLE_PATH", "/usr/bin/chromium"
+                    ),
+                }
+            ),
         )
 
         overall_timeout = request.timeout + 15

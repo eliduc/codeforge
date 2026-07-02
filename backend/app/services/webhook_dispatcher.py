@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from sqlalchemy import select, update
 
+from app.core.net_guard import assert_public_url  # КАО#R5-ssrf
 from app.db import AsyncSessionLocal
 from app.db.models import Webhook
 
@@ -97,6 +98,14 @@ def _build_payload(webhook: Webhook, event_type: str, data: dict) -> dict:
 
 async def _send_one(client: httpx.AsyncClient, webhook: Webhook, event_type: str, data: dict) -> int:
     """Send a single webhook. Returns HTTP status code."""
+    # КАО#R5-ssrf: authoritative guard at the sink — re-validate the target
+    # host at dispatch time (covers rows created before this guard existed and
+    # DNS-rebinding), so a webhook can never reach the internal network or the
+    # cloud metadata endpoint. Runs off the event loop since it resolves DNS.
+    await asyncio.get_running_loop().run_in_executor(
+        None, lambda: assert_public_url(webhook.url)
+    )
+
     payload = _build_payload(webhook, event_type, data)
     payload_bytes = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}

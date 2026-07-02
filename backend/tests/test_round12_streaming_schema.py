@@ -130,50 +130,37 @@ def test_session_update_rejects_fake_language():
 # ===========================================================================
 
 
-def test_orchestrator_streaming_default_is_true_for_empty_settings():
-    """B.1 — `settings = {}` → streaming_enabled = True.
+def _resolve_streaming_enabled(settings):
+    """Behaviorally exercise the REAL orchestrator logic (КАО#R5-streaming-test).
 
-    We don't run the orchestrator; we verify the source explicitly uses
-    `session_settings.get("streaming", True)` (default → True).
+    Replaces the previous ``inspect.getsource`` substring assertion, which was
+    brittle (a behavior-preserving refactor broke it) and not behavioral.
     """
     try:
-        import inspect
-        from app.core import orchestrator as orch_mod
-    except Exception as exc:
+        from app.core.orchestrator import WorkflowOrchestrator
+    except Exception as exc:  # pragma: no cover
         pytest.skip(f"orchestrator not importable: {exc!r}")
-    src = inspect.getsource(orch_mod.WorkflowOrchestrator)
-    # The streaming flag line must default to True.
-    assert 'session_settings.get("streaming", True)' in src, (
-        "Expected `session_settings.get('streaming', True)` (R12 default ON) in orchestrator source"
-    )
+    return WorkflowOrchestrator._resolve_streaming_enabled(settings)
 
 
-def test_orchestrator_streaming_logic_evaluation_empty_dict():
-    """Replicate the orchestrator's exact bool() expression with empty settings."""
-    session_settings: dict = {}
-    streaming_enabled = bool(session_settings.get("streaming", True))
-    assert streaming_enabled is True
+def test_orchestrator_streaming_default_is_true_for_empty_settings():
+    """B.1 — `settings = {}` → streaming_enabled = True (default ON)."""
+    assert _resolve_streaming_enabled({}) is True
 
 
 def test_orchestrator_streaming_logic_explicit_false():
     """B.2 — explicit False preserved."""
-    session_settings = {"streaming": False}
-    streaming_enabled = bool(session_settings.get("streaming", True))
-    assert streaming_enabled is False
+    assert _resolve_streaming_enabled({"streaming": False}) is False
 
 
 def test_orchestrator_streaming_logic_explicit_true():
     """B.3 — explicit True preserved."""
-    session_settings = {"streaming": True}
-    streaming_enabled = bool(session_settings.get("streaming", True))
-    assert streaming_enabled is True
+    assert _resolve_streaming_enabled({"streaming": True}) is True
 
 
 def test_orchestrator_streaming_logic_none_settings():
-    """`session.settings` may be None; orchestrator coerces to {} first."""
-    session_settings = None or {}
-    streaming_enabled = bool(session_settings.get("streaming", True))
-    assert streaming_enabled is True
+    """`session.settings` may be None; the resolver coerces to {} → True."""
+    assert _resolve_streaming_enabled(None) is True
 
 
 # ===========================================================================

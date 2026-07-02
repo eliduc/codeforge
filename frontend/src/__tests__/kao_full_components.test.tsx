@@ -283,66 +283,16 @@ describe('Full-A1 · StyledToast notify.*', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// 4. SessionListItem stand-in — minimal contract for a row link.
-// (SessionsPage doesn't export the row as a standalone component, so we
-//  pin the user-visible behaviour: link target + status text rendering.)
+// 4. SessionListItem — intentionally NOT unit-tested here.
+//
+// КАО#R5-shim-removed: a previous "contract shim" rendered a locally-defined
+// copy of the row and asserted against itself, so it stayed green even if the
+// real SessionsPage row changed its link target or dropped its aria-label —
+// false confidence. SessionsPage doesn't export the row as a standalone
+// component and mounting the full page here is disproportionate, so the real
+// session-row navigation + a11y is covered by the Playwright wave specs
+// (e2e/tests/wave3-live.spec.ts, wave4-live.spec.ts) against a live DOM.
 // ────────────────────────────────────────────────────────────────────────────
-
-interface MinimalSession {
-  id: string
-  name: string
-  status: 'running' | 'completed' | 'failed' | 'paused' | 'created'
-}
-
-function SessionRowShim({ session }: { session: MinimalSession }) {
-  // Mirror the JSX shape SessionsPage uses — Link to detail + status pill.
-  return (
-    <a
-      href={`/sessions/${session.id}`}
-      data-testid="session-row"
-      aria-label={`Open session ${session.name}`}
-    >
-      <span>{session.name}</span>
-      <span data-testid="status-pill">{session.status}</span>
-    </a>
-  )
-}
-
-describe('Full-A1 · SessionListItem (contract shim)', () => {
-  it('renders session name + status', () => {
-    render(
-      <MemoryRouter>
-        <SessionRowShim
-          session={{ id: 'abc123', name: 'Toy adder', status: 'running' }}
-        />
-      </MemoryRouter>
-    )
-    expect(screen.getByText('Toy adder')).toBeInTheDocument()
-    expect(screen.getByTestId('status-pill')).toHaveTextContent('running')
-  })
-
-  it('links to /sessions/<id>', () => {
-    render(
-      <MemoryRouter>
-        <SessionRowShim
-          session={{ id: 'xyz789', name: 'Calc', status: 'completed' }}
-        />
-      </MemoryRouter>
-    )
-    expect(screen.getByTestId('session-row').getAttribute('href')).toBe('/sessions/xyz789')
-  })
-
-  it('uses aria-label so screen readers announce the row purpose', () => {
-    render(
-      <MemoryRouter>
-        <SessionRowShim
-          session={{ id: 'qq', name: 'My session', status: 'failed' }}
-        />
-      </MemoryRouter>
-    )
-    expect(screen.getByLabelText('Open session My session')).toBeInTheDocument()
-  })
-})
 
 // ────────────────────────────────────────────────────────────────────────────
 // 5. Layout — sidebar navigation links

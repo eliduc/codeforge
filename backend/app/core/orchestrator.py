@@ -994,6 +994,50 @@ class WorkflowOrchestrator:
         except Exception as e:
             logger.warning(f"Failed to save checkpoint: {e}")
 
+    @staticmethod
+    def _resolve_streaming_enabled(session_settings: Optional[dict]) -> bool:
+        """КАО#R5-streaming-test — resolve the per-session streaming flag.
+
+        Default ON: Anthropic enforces a long-request timeout (~10 min) on
+        non-streaming calls; streaming avoids it (the provider falls back to a
+        non-streaming generate() on stream errors, so this is strictly safer).
+        Existing sessions with an explicit ``settings.streaming`` keep their
+        value; only missing/unset → True. ``session.settings`` may be None.
+
+        Extracted as a pure static method so the default can be unit-tested
+        behaviorally instead of asserting on orchestrator source text.
+        """
+        settings = session_settings or {}
+        return bool(settings.get("streaming", True))
+
+    async def _apply_cost_circuit_breaker(self) -> None:
+        """КАО#R5-cost-test — money-loss prevention: stop the session when the
+        configured cost cap is exceeded.
+
+        Extracted verbatim from the iteration-end block so this money-critical
+        logic can be unit-tested directly (see
+        ``backend/tests/test_kao_r5_cost_breaker.py``) instead of only running
+        inside the full iteration loop. Behaviour is unchanged.
+        """
+        cost_limit = getattr(self.session, "cost_limit_usd", None)
+        if cost_limit is None:
+            return
+        try:
+            cost_limit_f = float(cost_limit)
+        except (TypeError, ValueError):
+            return
+        if self.state.total_cost > cost_limit_f:
+            logger.warning(
+                f"Cost limit exceeded: ${self.state.total_cost:.4f} > ${cost_limit_f:.2f}"
+            )
+            await self.emit_event("cost_limit_exceeded", {
+                "cost_usd": self.state.total_cost,
+                "limit": cost_limit_f,
+            })
+            self.state.should_stop = True
+            self.state.failed = True
+            self.state.error = "Cost limit exceeded"
+
     async def _run_iteration_loop(self) -> None:
         """Run the main iteration loop until stop or all coders finish."""
         auto_continue = self._cached_auto_continue
@@ -1067,23 +1111,7 @@ class WorkflowOrchestrator:
 
             # Feature #3a: cost circuit breaker.
             # Stop the session if the configured cost cap is exceeded.
-            cost_limit = getattr(self.session, "cost_limit_usd", None)
-            if cost_limit is not None:
-                try:
-                    cost_limit_f = float(cost_limit)
-                except (TypeError, ValueError):
-                    cost_limit_f = None
-                if cost_limit_f is not None and self.state.total_cost > cost_limit_f:
-                    logger.warning(
-                        f"Cost limit exceeded: ${self.state.total_cost:.4f} > ${cost_limit_f:.2f}"
-                    )
-                    await self.emit_event("cost_limit_exceeded", {
-                        "cost_usd": self.state.total_cost,
-                        "limit": cost_limit_f,
-                    })
-                    self.state.should_stop = True
-                    self.state.failed = True
-                    self.state.error = "Cost limit exceeded"
+            await self._apply_cost_circuit_breaker()
 
             # Auto-save checkpoint for crash recovery (best-effort, never breaks workflow)
             await self._save_checkpoint("iteration_end")
@@ -1860,19 +1888,14 @@ class WorkflowOrchestrator:
                     "timeout_exceeded": prev_exec.get("timeout_exceeded", False),
                 }
 
-        # Streaming PoC: enabled per-session via settings.streaming = true.
+        # Streaming: enabled per-session via settings.streaming.
         # When on, the coder uses the provider's streaming API and emits
         # `agent_streaming` WebSocket events for each text delta so the UI
         # can render code as it's generated. A final event with
         # is_final=True is emitted after the full response is assembled.
-        # Default OFF — preserves existing non-streaming behavior exactly.
-        session_settings = self.session.settings or {}
-        # Default ON: Anthropic enforces a long-request timeout (~10 min) on
-        # non-streaming calls. Streaming avoids the limit entirely. The provider
-        # has a fallback to non-streaming generate() on stream errors, so this
-        # is strictly safer. Existing sessions with explicit settings.streaming
-        # keep their value; only missing/unset → True.
-        streaming_enabled = bool(session_settings.get("streaming", True))
+        # КАО#R5 — Default ON (see _resolve_streaming_enabled): streaming is
+        # used unless settings.streaming is explicitly false.
+        streaming_enabled = self._resolve_streaming_enabled(self.session.settings)
 
         async def _on_stream_chunk(chunk: str) -> None:
             try:

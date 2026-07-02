@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.net_guard import assert_public_url  # КАО#R5-ssrf
 from app.db.models import AgentType, CodeVersionStatus, IssueSeverity, SessionStatus
 
 _schemas_logger = logging.getLogger(__name__)
@@ -1138,6 +1139,8 @@ class WebhookCreate(BaseModel):
     def validate_url(cls, v: str) -> str:
         if not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
+        # КАО#R5-ssrf: reject internal/metadata targets at create time.
+        assert_public_url(v)
         return v
 
     @field_validator("webhook_type")
@@ -1173,6 +1176,8 @@ class WebhookUpdate(BaseModel):
             return v
         if not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
+        # КАО#R5-ssrf: reject internal/metadata targets at update time.
+        assert_public_url(v)
         return v
 
     @field_validator("webhook_type")

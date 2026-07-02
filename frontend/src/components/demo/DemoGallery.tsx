@@ -43,6 +43,8 @@ export default function DemoGallery() {
   const [creating, setCreating] = useState(false)
   const navigate = useNavigate()
   const isAuthenticated = useAuthStore(s => s.isAuthenticated)
+  // КАО#R5-demo-auth — auth-check-in-progress flag (see DemoPlayerPage).
+  const authLoading = useAuthStore(s => s.loading)
 
   useEffect(() => {
     let cancelled = false
@@ -70,6 +72,9 @@ export default function DemoGallery() {
   // authenticated user gets a billing-confirm dialog before a real (paid)
   // session is created — rather than firing createSession on the first click.
   function handleTryYourself(id: string) {
+    // КАО#R5-demo-auth — don't misclassify an authed user as anonymous while
+    // the session cookie is still being validated.
+    if (authLoading) return
     if (!isAuthenticated) {
       navigate('/login', { state: { from: '/demos' } })
       return

@@ -32,6 +32,23 @@ NON_WHITELISTED_EMAIL = os.environ.get(
     "TEST_NON_WHITELISTED_EMAIL", "definitely-not-allowed-9q3@example.com"
 )
 
+# КАО#R5-e2e-marker — every test here hits the live backend over HTTP, so the
+# module is an e2e suite: mark it accordingly (like the other integration files)
+# and skip cleanly when the backend is unreachable instead of hard-failing.
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
+
+
+@pytest.fixture(autouse=True)
+def _require_backend_reachable():
+    """Skip (not fail) the whole module when the backend isn't up."""
+    try:
+        resp = httpx.get(f"{BACKEND_URL}/health", timeout=5.0)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"backend unreachable at {BACKEND_URL}: {exc!r}")
+        return
+    if resp.status_code != 200:
+        pytest.skip(f"backend /health returned {resp.status_code}")
+
 
 @pytest.mark.asyncio
 async def test_request_otp_rejects_invalid_email_format() -> None:
@@ -109,7 +126,7 @@ async def test_me_with_garbage_token_returns_401() -> None:
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_authenticated_sessions_flow() -> None:
-    """End-to-end happy path requires an authenticated client fixture (not yet wired)."""
-    pytest.skip("Requires authenticated test fixture (see module docstring)")
+# КАО#R5 — removed the permanently-skipped `test_authenticated_sessions_flow`
+# no-op placeholder: it never asserted anything (dead-weight coverage). The
+# authenticated happy-path IS exercised end-to-end in test_authenticated_flow.py
+# via the OTP/JWT `auth_token` fixture, so nothing is lost here.

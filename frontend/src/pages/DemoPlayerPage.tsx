@@ -616,6 +616,10 @@ export default function DemoPlayerPage() {
   // demo page, but creating a real session requires auth. Read isAuthenticated
   // here (not in deps below — Zustand subscription is fine).
   const isAuthenticated = useAuthStore(s => s.isAuthenticated)
+  // КАО#R5-demo-auth — true while loadFromStorage is still resolving the
+  // session cookie. During that ~1-RTT window isAuthenticated is transiently
+  // false, so we must NOT treat an already-logged-in visitor as anonymous.
+  const authLoading = useAuthStore(s => s.loading)
 
   // Улучшатели#6 P1·M — Try-it-yourself confirm dialog.
   // `handleTryYourself` now OPENS a confirmation modal; the actual session
@@ -624,12 +628,14 @@ export default function DemoPlayerPage() {
   // instead of opening the confirm dialog and 401-ing on submit.
   const handleTryYourself = useCallback(() => {
     if (!timeline) return
+    // КАО#R5-demo-auth — wait for the auth check to settle before deciding.
+    if (authLoading) return
     if (!isAuthenticated) {
       navigate('/login', { state: { from: window.location.pathname } })
       return
     }
     setTryConfirmOpen(true)
-  }, [timeline, isAuthenticated, navigate])
+  }, [timeline, isAuthenticated, authLoading, navigate])
 
   const doCreateSession = useCallback(async () => {
     if (!timeline) return

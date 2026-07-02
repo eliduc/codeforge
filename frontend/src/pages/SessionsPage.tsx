@@ -1059,12 +1059,15 @@ export default function SessionsPage() {
                   {selectionMode && (
                     <button
                       onClick={() => toggleSelection(session.id)}
+                      role="checkbox"
+                      aria-checked={selectedIds.has(session.id)}
+                      aria-label={`Select session ${session.name}`}
                       className="mr-3 p-1 rounded hover:bg-gray-700 transition-colors"
                     >
                       {selectedIds.has(session.id) ? (
-                        <CheckSquare className="w-5 h-5 text-indigo-400" />
+                        <CheckSquare className="w-5 h-5 text-indigo-400" aria-hidden="true" />
                       ) : (
-                        <Square className="w-5 h-5 text-gray-500" />
+                        <Square className="w-5 h-5 text-gray-500" aria-hidden="true" />
                       )}
                     </button>
                   )}

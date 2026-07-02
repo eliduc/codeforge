@@ -149,6 +149,10 @@ export default function CommandPalette() {
                   'bg-cf-panel text-cf-text border border-cf-border',
                 )}
               >
+                {/* КАО#R5-a11y: give the dialog an accessible name so screen
+                    readers announce it as "Command palette" instead of an
+                    unnamed dialog. Headless UI wires aria-labelledby from this. */}
+                <Dialog.Title className="sr-only">Command palette</Dialog.Title>
                 <Combobox<PaletteCommand | null>
                   value={null}
                   onChange={runCommand}
@@ -157,6 +161,7 @@ export default function CommandPalette() {
                     <Search className="w-4 h-4 text-cf-text-muted shrink-0" aria-hidden="true" />
                     <Combobox.Input
                       autoFocus
+                      aria-label="Search commands and sessions"  /* КАО#R5-a11y */
                       placeholder="Search commands and sessions..."
                       onChange={(e) => setQuery(e.target.value)}
                       displayValue={() => query}
