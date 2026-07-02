@@ -97,6 +97,15 @@ def test_npm_audit_no_high_critical() -> None:
 # 2. pip-audit
 # ---------------------------------------------------------------------------
 
+# КАО#R5-e2e-fixtures — this test audits the *installed environment* by design
+# (КАО#MN-3: the runtime image doesn't ship requirements.txt). That's only
+# meaningful inside the backend container; on a dev host it scans the user's
+# unrelated site-packages and raises dozens of false alarms.
+@pytest.mark.skipif(
+    not (os.path.exists("/.dockerenv") or os.environ.get("CF_PIP_AUDIT_ANYWHERE")),
+    reason="pip-audit targets the installed env — run inside the backend "
+    "container (or set CF_PIP_AUDIT_ANYWHERE=1 to force)",
+)
 def test_pip_audit_no_high_critical() -> None:
     """``pip-audit`` must report 0 high+critical advisories for the backend.
 

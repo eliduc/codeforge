@@ -62,3 +62,7 @@ logs/
 
 # Temp/debug session dumps
 *.session.json
+
+# КАО#R5 — stray pytest output dumps and broken %temp% env-var expansions
+backend/pytest_*.txt
+%temp%/

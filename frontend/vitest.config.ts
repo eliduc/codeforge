@@ -14,5 +14,10 @@ export default defineConfig({
     // src/lib/thinkingEfforts.test.ts) alongside the __tests__ suite.
     include: ['src/__tests__/**/*.test.{ts,tsx}', 'src/lib/**/*.test.{ts,tsx}'],
     css: false,
+    // КАО#R5-vitest-timeout — cold full-suite runs spend ~35s+ on module
+    // imports before the first test executes; the default 5s testTimeout then
+    // flakes the first heavy test (observed: kao_ux_audit UX-6). 15s keeps
+    // genuine hangs failing fast while absorbing the cold-start tax.
+    testTimeout: 15000,
   },
 })

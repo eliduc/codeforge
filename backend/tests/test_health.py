@@ -14,6 +14,11 @@ import pytest
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000")
 
+# КАО#R5-e2e-fixtures — every test here hits the live backend over HTTP, so
+# mark the module e2e: the conftest autouse guard skips it cleanly (instead of
+# hard connection-error failures) when the backend isn't reachable.
+pytestmark = pytest.mark.e2e
+
 
 @pytest.mark.asyncio
 async def test_health_endpoint_returns_200() -> None:

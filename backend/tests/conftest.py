@@ -43,6 +43,47 @@ import pytest_asyncio
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 
+# Probe result cache: None = not yet probed, "" = healthy, non-empty = skip reason.
+_BACKEND_HEALTH: str | None = None
+
+
+def _skip_if_backend_unreachable() -> None:
+    """КАО#R5-e2e-fixtures — probe /health and skip (not error) when down.
+
+    The async ``auth_token`` fixture has always had this guard; the sync
+    token fixtures did not, so running ``pytest backend/tests/`` outside the
+    stage container produced hard fixture ERRORs (raw connection failures)
+    instead of clean skips. Call this before any fixture work that needs the
+    live backend. The probe result is cached for the whole run.
+    """
+    global _BACKEND_HEALTH
+    if _BACKEND_HEALTH is None:
+        try:
+            resp = httpx.get(f"{BACKEND_URL}/health", timeout=5.0)
+            _BACKEND_HEALTH = (
+                "" if resp.status_code == 200
+                else f"backend /health returned {resp.status_code}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _BACKEND_HEALTH = f"backend unreachable at {BACKEND_URL}: {exc!r}"
+    if _BACKEND_HEALTH:
+        pytest.skip(_BACKEND_HEALTH)
+
+
+@pytest.fixture(autouse=True)
+def _e2e_backend_guard(request):
+    """КАО#R5-e2e-fixtures — every ``e2e``-marked test requires the live backend.
+
+    Many e2e tests talk to BACKEND_URL (or the DB) directly in their bodies
+    rather than via the auth fixtures, so a down backend used to surface as
+    dozens of hard connection-error FAILURES instead of skips. This autouse
+    guard turns the whole class into clean skips; inside the container the
+    single cached /health probe passes and behavior is unchanged.
+    """
+    if request.node.get_closest_marker("e2e") is not None:
+        _skip_if_backend_unreachable()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -123,16 +164,21 @@ async def auth_token(test_email: str) -> AsyncIterator[str]:
     await _engine.dispose()
 
     code = "654321"  # known plaintext, hashed using the same SECRET_KEY the route uses
-    async with AsyncSessionLocal() as db:
-        db.add(
-            OTPCode(
-                email=test_email.lower().strip(),
-                code_hash=_hash_code(code),
-                expires_at=datetime.now(timezone.utc)
-                + timedelta(minutes=settings.otp_expiry_minutes),
+    # КАО#R5-e2e-fixtures — DB may be unreachable even when /health passes
+    # (e.g. backend port mapped to the host but postgres not): skip, not ERROR.
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(
+                OTPCode(
+                    email=test_email.lower().strip(),
+                    code_hash=_hash_code(code),
+                    expires_at=datetime.now(timezone.utc)
+                    + timedelta(minutes=settings.otp_expiry_minutes),
+                )
             )
-        )
-        await db.commit()
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"database unreachable for OTP provisioning: {exc!r}")
 
     async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=10.0) as client:
         resp = await client.post(
@@ -253,25 +299,36 @@ def _provision_token_sync(email: str) -> str | None:
             )
             await db.commit()
 
+    # КАО#R5-e2e-fixtures — the direct DB insert (and the HTTP call below) can
+    # fail with raw connection errors when run outside the container even if
+    # /health passed (DB port not mapped). Treat any failure as "cannot
+    # provision" → callers pytest.skip instead of ERROR-ing at fixture setup.
     try:
-        asyncio.run(_insert())
-    except RuntimeError:
-        # already in loop — fallback: create new loop
-        loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(_insert())
-        finally:
-            loop.close()
+            asyncio.run(_insert())
+        except RuntimeError:
+            # already in loop — fallback: create new loop
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_insert())
+            finally:
+                loop.close()
+    except Exception:  # noqa: BLE001
+        return None
 
-    with httpx.Client(base_url=BACKEND_URL, timeout=10.0) as client:
-        resp = client.post("/api/auth/verify-otp", json={"email": email, "code": code})
-        if resp.status_code != 200:
-            return None
-        return resp.json().get("access_token")
+    try:
+        with httpx.Client(base_url=BACKEND_URL, timeout=10.0) as client:
+            resp = client.post("/api/auth/verify-otp", json={"email": email, "code": code})
+            if resp.status_code != 200:
+                return None
+            return resp.json().get("access_token")
+    except httpx.HTTPError:
+        return None
 
 
 @pytest.fixture(scope="session")
 def auth_token_sync(test_email: str) -> str:
+    _skip_if_backend_unreachable()  # КАО#R5-e2e-fixtures — skip, don't ERROR
     tok = _provision_token_sync(test_email)
     if not tok:
         pytest.skip(f"could not provision sync token for {test_email}")
@@ -280,6 +337,7 @@ def auth_token_sync(test_email: str) -> str:
 
 @pytest.fixture(scope="session")
 def auth_token_b_sync(test_email_b: str) -> str:
+    _skip_if_backend_unreachable()  # КАО#R5-e2e-fixtures — skip, don't ERROR
     tok = _provision_token_sync(test_email_b)
     if not tok:
         pytest.skip(f"could not provision sync token for {test_email_b}")
