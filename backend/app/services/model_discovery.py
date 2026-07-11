@@ -178,15 +178,21 @@ class ModelDiscoveryService:
             baseline = {p: list(ms) for p, ms in current.items()}
             state["baseline"] = baseline
 
+        # "announced" items can't enter the baseline (they're not in the vendor
+        # API), so track a separate seen-set — otherwise the same announced model
+        # (e.g. grok-4.5) would re-raise the notification on every app entry.
+        announced_seen: dict = state.get("announced_seen") or {}
+
         providers: dict[str, dict] = {}
         has_updates = False
         for provider, models in current.items():
             base = set(baseline.get(provider, []))
             new = [] if first_run else sorted(m for m in models if m not in base)
-            ann = announced.get(provider, [])
+            seen = set(announced_seen.get(provider, []))
+            ann = [a for a in announced.get(provider, []) if a not in seen]
             if new or ann:
                 has_updates = True
-            providers[provider] = {"current": list(models), "new": new, "announced": list(ann)}
+            providers[provider] = {"current": list(models), "new": new, "announced": ann}
 
         state["checked_at"] = _now().isoformat()
         await self._save_state(db, state)
@@ -199,11 +205,14 @@ class ModelDiscoveryService:
         }
 
     async def acknowledge(self, db) -> dict:
-        """Mark the current lineup as seen — clears the 'new' set."""
+        """Mark the current lineup as seen — clears the 'new' AND 'announced' sets."""
         state = await self._load_state(db)
         current = await self._fetch_current(force=True)
         state["current"] = current
         state["fetched_at"] = _now().isoformat()
         state["baseline"] = {p: list(ms) for p, ms in current.items()}
+        # Also mark the currently-announced items as seen so they don't re-nag.
+        announced = state.get("announced") or {}
+        state["announced_seen"] = {p: list(a) for p, a in announced.items()}
         await self._save_state(db, state)
         return {"acknowledged": True, "providers": list(current.keys())}

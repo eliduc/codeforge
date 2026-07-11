@@ -17,8 +17,12 @@ from app.llm import registry as model_registry
 # Regex to extract family + version from any Anthropic model id.
 # Matches: claude-opus-4-7, claude-sonnet-4-6-20251022, claude-haiku-5-0, etc.
 # Also matches dot-style: claude-opus-4.7
+# КАО#R6-models — family name is a generic ``[a-z]+`` capture, NOT a hardcoded
+# (opus|sonnet|haiku) list. The old list silently DROPPED any new family — e.g.
+# claude-fable-5 was returned by /v1/models but never surfaced. `[a-z]+` after
+# `claude-` matches opus/sonnet/haiku/fable/… and stops at the version digits.
 _MODEL_FAMILY_RE = re.compile(
-    r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-._]?(\d+)?",
+    r"claude[-_]?([a-z]+)[-_]?(\d+)[-._]?(\d+)?",
     re.IGNORECASE,
 )
 
@@ -31,6 +35,7 @@ def _parse_family(model_id: str) -> tuple[str, int, int] | None:
         claude-sonnet-4-6-2025 -> ('sonnet', 4, 6)
         claude-haiku-5-0       -> ('haiku', 5, 0)
         claude-opus-4.7        -> ('opus', 4, 7)
+        claude-fable-5         -> ('fable', 5, 0)   # КАО#R6 — new family surfaces
     """
     m = _MODEL_FAMILY_RE.search(model_id)
     if not m:

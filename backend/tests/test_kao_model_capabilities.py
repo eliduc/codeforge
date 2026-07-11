@@ -271,12 +271,18 @@ def test_openai_parse_nano_tier():
     assert _parse_openai_model("gpt-6.3-nano") == (6, 3, "nano")
 
 
-def test_openai_parse_chat_and_search_collapse_to_base():
-    """chat/search/preview suffixes are NOT real tiers → collapse to 'base'."""
+def test_openai_parse_named_variants_are_distinct():
+    """КАО#R6 — named suffixes (chat/preview AND codenames like luna/sol) are kept
+    as DISTINCT variant slots, not collapsed to 'base' — otherwise same-version
+    variants (gpt-5.6-luna / gpt-5.6-sol) merge and only one survives. A plain
+    version → 'base'. ('search' models are dropped by the noise filter upstream.)"""
     from app.llm.providers.openai_provider import _parse_openai_model
-    assert _parse_openai_model("gpt-5-chat") == (5, 0, "base")
-    assert _parse_openai_model("gpt-5-search") == (5, 0, "base")
-    assert _parse_openai_model("gpt-5-preview") == (5, 0, "base")
+    assert _parse_openai_model("gpt-5") == (5, 0, "base")
+    assert _parse_openai_model("gpt-5-chat") == (5, 0, "chat")
+    assert _parse_openai_model("gpt-5-preview") == (5, 0, "preview")
+    assert _parse_openai_model("gpt-5.6-luna") == (5, 6, "luna")
+    assert _parse_openai_model("gpt-5.6-sol") == (5, 6, "sol")
+    assert _parse_openai_model("gpt-5.4-mini") == (5, 4, "mini")
 
 
 def test_openai_parse_o_series_future_major():

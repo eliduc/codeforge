@@ -150,6 +150,25 @@ async def test_tavily_announced_only_when_strictly_newer():
     assert res["tavily_enabled"] is True
 
 
+async def test_acknowledged_announced_does_not_renag():
+    """КАО#R6 — an announced item (not in the API, can't enter the baseline) must
+    stop re-notifying after the user acknowledges it."""
+    router = _router(grok=_StubProvider(["grok-4.3"]))
+    scout = _FakeScout(enabled=True, mapping={"grok": ["grok-4.5"]})
+    svc = _svc(router, scout)
+    db = _FakeDB()
+
+    res1 = await svc.detect_updates(db, force=True)
+    assert res1["providers"]["grok"]["announced"] == ["grok-4.5"]
+    assert res1["has_updates"] is True
+
+    await svc.acknowledge(db)
+
+    res2 = await svc.detect_updates(db, force=True)
+    assert res2["providers"]["grok"]["announced"] == []
+    assert res2["has_updates"] is False
+
+
 async def test_no_tavily_when_disabled():
     router = _router(grok=_StubProvider(["grok-4.3"]))
     svc = _svc(router, _FakeScout(enabled=False, mapping={"grok": ["grok-9.9"]}))

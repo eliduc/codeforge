@@ -17,7 +17,12 @@ logger = logging.getLogger(__name__)
 # KAO#VR-32 — version-agnostic OpenAI model parser.
 # Matches gpt-5, gpt-5.4, gpt-5.4-pro, gpt-5-mini, gpt-6, etc.
 # Returns (major, minor, tier) where tier ∈ {"pro", "base", "mini", "nano"}.
-_GPT_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:-(pro|mini|nano|chat|search|preview))?", re.IGNORECASE)
+# КАО#R6-models — the trailing group is a GENERIC letter suffix ([a-z]+), not a
+# fixed (pro|mini|nano|…) list, so named variants like gpt-5.6-luna / gpt-5.6-sol
+# each get a distinct slot instead of both collapsing to (5.6, base). Letters
+# only, so dated snapshots ("-2025-08-07") are NOT captured here (handled by the
+# priority logic).
+_GPT_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:-([a-z]+))?", re.IGNORECASE)
 # O-series reasoning models: o1, o3, o4-mini, o3-pro, etc.
 _O_RE = re.compile(r"^(o\d+)(?:-(mini|pro|preview))?", re.IGNORECASE)
 
@@ -41,8 +46,10 @@ def _parse_openai_model(name: str) -> tuple[int, int, str] | None:
     if m:
         major = int(m.group(1))
         minor = int(m.group(2) or 0)
-        tier_raw = (m.group(3) or "").lower()
-        tier = tier_raw if tier_raw in ("pro", "mini", "nano") else "base"
+        # КАО#R6 — keep ANY named variant (pro/mini/nano AND codenames like
+        # luna/sol/chat) as the slot discriminator so same-version variants all
+        # surface. Empty suffix → "base".
+        tier = (m.group(3) or "").lower() or "base"
         return (major, minor, tier)
     m = _O_RE.match(n)
     if m:
@@ -341,7 +348,9 @@ class OpenAIProvider(BaseLLMProvider):
                 best.items(),
                 key=lambda kv: (
                     0 if kv[0][0].startswith("gpt") else 1,  # gpt then o-series
-                    tier_rank.get(kv[0][1], 99),
+                    # КАО#R6 — named variants (luna/sol/chat) rank like base (0),
+                    # not last, so flagship 5.6 variants stay near the top.
+                    tier_rank.get(kv[0][1], 0),
                     -kv[1][3][0],  # newer major first
                     -kv[1][3][1],  # newer minor first
                 ),

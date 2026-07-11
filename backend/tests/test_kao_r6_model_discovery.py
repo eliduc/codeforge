@@ -32,6 +32,7 @@ def _fake_models_response(ids):
 # developers.openai.com): several concurrent gpt-5.x versions + tiers, dated
 # snapshots, o-series, and non-chat/obsolete noise that must be filtered.
 LIVE_LIKE_IDS = [
+    "gpt-5.6-luna", "gpt-5.6-sol",   # same-version NAMED variants — both must show
     "gpt-5.5", "gpt-5.5-pro",
     "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
     "gpt-5.2", "gpt-5.2-pro",
@@ -111,3 +112,25 @@ async def test_gpt_ordered_before_o_series():
     gpt_idx = [i for i, m in enumerate(models) if m.startswith("gpt")]
     o_idx = [i for i, m in enumerate(models) if m.startswith("o")]
     assert max(gpt_idx) < min(o_idx), f"gpt should precede o-series: {models}"
+
+
+async def test_same_version_named_variants_both_surface():
+    """КАО#R6 — gpt-5.6-luna and gpt-5.6-sol are distinct 5.6 variants; the old
+    parser mapped both to (5,6,base) so only one survived. Both must show now."""
+    models = await _discover(LIVE_LIKE_IDS)
+    assert "gpt-5.6-luna" in models, models
+    assert "gpt-5.6-sol" in models, models
+
+
+async def test_anthropic_generic_family_parsing():
+    """КАО#R6 — Anthropic family name is generic, not a hardcoded opus/sonnet/
+    haiku list, so a NEW family (claude-fable-5, returned by /v1/models) is no
+    longer silently dropped."""
+    try:
+        from app.llm.providers.anthropic_provider import _parse_family
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"anthropic provider not importable: {exc!r}")
+    assert _parse_family("claude-fable-5") == ("fable", 5, 0)
+    assert _parse_family("claude-opus-4-8") == ("opus", 4, 8)
+    assert _parse_family("claude-sonnet-4-6-2025") == ("sonnet", 4, 6)
+    assert _parse_family("not-a-claude-model") is None
