@@ -17,6 +17,8 @@ from app.schemas import (
     TestLLMRequest, TestLLMResponse
 )
 from app.llm.router import get_llm_router
+from app.services.model_discovery import ModelDiscoveryService  # КАО#R6-models
+from app.services.tavily_scout import TavilyModelScout  # КАО#R6-models
 
 router = APIRouter()
 
@@ -256,6 +258,42 @@ async def refresh_provider_models(provider: LLMProvider):
         "models": result["models"],
         "message": result.get("error", "Models refreshed successfully")
     }
+
+
+# КАО#R6-models — background "new models available" detection + notification.
+async def _get_model_discovery() -> ModelDiscoveryService:
+    router_instance = await get_llm_router()
+    app_settings = get_settings()
+    key = (
+        app_settings.tavily_api_key.get_secret_value()
+        if app_settings.tavily_api_key
+        else None
+    )
+    return ModelDiscoveryService(router_instance, TavilyModelScout(key))
+
+
+@router.get("/models/check-updates")
+async def check_model_updates(
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Have new (or newly-announced) models appeared for vendors with keys?
+
+    Returns per-provider {current, new, announced} plus a `has_updates` flag the
+    frontend uses to raise the "load latest models" notification. Cheap: vendor
+    /v1/models and Tavily lookups are TTL-throttled inside the service.
+    """
+    svc = await _get_model_discovery()
+    return await svc.detect_updates(db, force=force)
+
+
+@router.post("/models/acknowledge")
+async def acknowledge_model_updates(
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark the current model lineup as seen (dismiss the notification)."""
+    svc = await _get_model_discovery()
+    return await svc.acknowledge(db)
 
 
 @router.get("/models/{provider}", response_model=List[str])

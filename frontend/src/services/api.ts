@@ -765,6 +765,29 @@ export async function testLLMProvider(provider: string): Promise<{ success: bool
   })
 }
 
+// КАО#R6-models — background "new models available" detection.
+export interface ModelUpdateProvider {
+  current: string[]
+  /** Models present in the vendor API but not yet acknowledged (usable now). */
+  new: string[]
+  /** Newer models announced on the web but not yet in the vendor API. */
+  announced: string[]
+}
+export interface ModelUpdatesResponse {
+  providers: Record<string, ModelUpdateProvider>
+  has_updates: boolean
+  tavily_enabled: boolean
+  checked_at: string
+}
+
+export async function checkModelUpdates(): Promise<ModelUpdatesResponse> {
+  return apiFetch<ModelUpdatesResponse>('/api/settings/models/check-updates')
+}
+
+export async function acknowledgeModelUpdates(): Promise<{ acknowledged: boolean; providers: string[] }> {
+  return apiFetch('/api/settings/models/acknowledge', { method: 'POST' })
+}
+
 // Enhancement API
 export async function enhanceSession(sessionId: string, request: EnhanceRequest): Promise<EnhanceResponse> {
   return apiFetch<EnhanceResponse>(`/api/sessions/${sessionId}/enhance`, {

@@ -283,22 +283,42 @@ class OpenAIProvider(BaseLLMProvider):
                     continue
                 major, minor, tier = parsed
 
-                # Tier-specific family key. For gpt-X.Y-tier, the family key
-                # is "gpt-X" — so we only surface the LATEST minor per tier
-                # (gpt-5.4 wins over gpt-5.1 for the "gpt"+"base" slot).
+                # КАО#R6-models — drop obsolete generations so the list is the
+                # CURRENT lineup, not every historical snapshot (mirrors the
+                # google/grok "drop ancient" floors). gpt < 4 and o-series < 3
+                # are retired.
+                if model_lower.startswith("o"):
+                    if major < 3:
+                        continue
+                else:
+                    if major < 4:
+                        continue
+
+                # КАО#R6-models — key each slot by the EXACT version so EVERY
+                # current model surfaces. Previously all gpt-* shared the family
+                # key "gpt", collapsing gpt-5 / 5.1 / 5.2 / 5.4 / 5.5 into one
+                # (gpt, base) slot — only the newest survived (the "1 of 3" bug
+                # the user reported for ChatGPT). Dated snapshots within a single
+                # version are still collapsed to the clean alias via `priority`.
                 if model_lower.startswith("o"):
                     family_key = f"o{major}"  # o3, o4, o5 — keep distinct
                 else:
-                    family_key = "gpt"
+                    family_key = f"gpt-{major}.{minor}"
                 slot = (family_key, tier)
 
-                # Priority: latest alias (0) > no dated suffix (1) > dated (2).
+                # Priority: latest alias (0) > clean alias (1) > dated snapshot (2).
+                # КАО#R6-models — dated snapshots are "-YYYY-MM-DD" (OpenAI's real
+                # format, e.g. gpt-5-2025-08-07) or the compact "-YYYYMMDD". The
+                # old check only matched the compact form on the LAST hyphen
+                # segment, so hyphenated dates (last segment "07") leaked in as
+                # clean aliases and could beat the real alias once slots were
+                # keyed per-version.
                 if 'latest' in model_lower:
                     priority = 0
-                elif not (model_id.split('-')[-1].isdigit() and len(model_id.split('-')[-1]) >= 8):
-                    priority = 1
-                else:
+                elif re.search(r'-\d{4}-\d{2}-\d{2}$', model_id) or re.search(r'-\d{8}$', model_id):
                     priority = 2
+                else:
+                    priority = 1
                 created = str(model.created) if hasattr(model, 'created') else ""
 
                 existing = best.get(slot)
@@ -314,13 +334,13 @@ class OpenAIProvider(BaseLLMProvider):
 
             # Tier preference order — base first (flagship), then mini/nano, pro last.
             tier_rank = {"base": 0, "mini": 1, "nano": 2, "pro": 3}
-            # Family preference — gpt before o-series in the UI.
-            family_rank = {"gpt": 0}
 
+            # КАО#R6-models — family keys are now versioned ("gpt-5.5", "o3"),
+            # so rank gpt-* before o-series by prefix instead of an exact map.
             ordered = sorted(
                 best.items(),
                 key=lambda kv: (
-                    family_rank.get(kv[0][0], 1),  # gpt then o-series
+                    0 if kv[0][0].startswith("gpt") else 1,  # gpt then o-series
                     tier_rank.get(kv[0][1], 99),
                     -kv[1][3][0],  # newer major first
                     -kv[1][3][1],  # newer minor first

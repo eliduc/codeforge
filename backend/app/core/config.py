@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     grok_api_key: SecretStr | None = None
     ollama_base_url: str = "http://localhost:11434"
 
+    # КАО#R6-models — Tavily web-search key for the "latest models" scout.
+    # Optional: when unset, the Tavily augmentation is disabled and model
+    # discovery/refresh falls back to the vendor /v1/models APIs only.
+    tavily_api_key: SecretStr | None = None
+
     # Code Execution
     docker_socket: str = "/var/run/docker.sock"
     execution_timeout: int = 60

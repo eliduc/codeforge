@@ -13,6 +13,7 @@ import OnboardingTour from '../onboarding/OnboardingTour'
 import { resetAll as resetAllTours } from '../onboarding/useOnboarding'
 import CommandPalette from '../common/CommandPalette'
 import Button from '../common/Button'
+import { useModelUpdateNotifier } from '../../hooks/useModelUpdateNotifier'
 
 // Улучшатели#5 P1·S — Toaster z-stack / position-rule conflict
 // Renders a "Dismiss all" pill above the toast column when ≥3 toasts are
@@ -292,6 +293,10 @@ export default function Layout({ children }: LayoutProps) {
   useEffect(() => {
     fetchProviders()
   }, [fetchProviders])
+
+  // КАО#R6-models — after providers load, check (once) whether newer models
+  // appeared for configured vendors and, if so, offer to load them.
+  useModelUpdateNotifier()
 
   // Check if we need to show the API key setup dialog
   useEffect(() => {

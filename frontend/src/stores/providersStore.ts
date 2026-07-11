@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import type { ProviderInfo } from '../types'
-import { getLLMProviders, refreshModels } from '../services/api'
+import {
+  getLLMProviders,
+  refreshModels,
+  checkModelUpdates,
+  acknowledgeModelUpdates,
+} from '../services/api'
+import type { ModelUpdatesResponse } from '../services/api'
 
 interface ProvidersState {
   /** All providers (including unconfigured) */
@@ -18,6 +24,11 @@ interface ProvidersState {
 
   /** Refresh models from provider APIs, then re-fetch provider list */
   refreshAllModels: () => Promise<{ success: boolean; error?: string }>
+
+  /** КАО#R6-models — background check for newly-available / announced models */
+  checkModelUpdates: () => Promise<ModelUpdatesResponse | null>
+  /** Mark the current model lineup as seen (dismiss the notification) */
+  acknowledgeModels: () => Promise<void>
 }
 
 export const useProvidersStore = create<ProvidersState>((set, get) => ({
@@ -58,6 +69,23 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       }
     } catch (err) {
       return { success: false, error: String(err) }
+    }
+  },
+
+  checkModelUpdates: async () => {
+    try {
+      return await checkModelUpdates()
+    } catch {
+      // Best-effort background check — never surface an error to the user.
+      return null
+    }
+  },
+
+  acknowledgeModels: async () => {
+    try {
+      await acknowledgeModelUpdates()
+    } catch {
+      /* ignore — acknowledgement is best-effort */
     }
   },
 }))
